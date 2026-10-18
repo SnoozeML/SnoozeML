@@ -146,7 +146,7 @@ pytest python/tests -v
 
 To keep this file evergreen and avoid duplicate maintenance, **do not hardcode feature checklists here**. Instead, consult the single sources of truth in the repository:
 
-- **Feature Roadmap & Status**: Check the `# TODO` section in [`README.md`](README.md) before starting new feature work and mark items `[x]` there when completed.
+- **Feature Roadmap & Status**: Consult the `## Roadmap` section in [`README.md`](README.md) for planned architectural milestones.
 - **Technical Design Specifications**:
   - [`design_docs/grpc_design.md`](design_docs/grpc_design.md) — Native gRPC & future KServe v2 / Triton protocol design.
   - [`design_docs/python_sdk_design.md`](design_docs/python_sdk_design.md) — Planned `snoozeml-py` Python SDK & automatic ONNX export architecture.

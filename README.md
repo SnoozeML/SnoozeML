@@ -22,6 +22,9 @@
 
 **SnoozeML** (`snooze`) is a single-binary, bare-metal inference server engineered for high hardware utilization and zero idle memory waste. It combines **adaptive dynamic micro-batching** along `Axis(0)` with **scale-to-zero memory reclamation**, lazily loading model weights on demand and automatically evicting inactive models from GPU VRAM and host RAM.
 
+> [!NOTE]
+> SnoozeML is purpose-built for predictive machine learning, deep learning encoders, computer vision, audio, and tabular models. Generative Large Language Models (LLMs) requiring autoregressive token decoding and KV-cache management are explicitly **out of scope**.
+
 ### Why SnoozeML?
 
 - **Adaptive Dynamic Micro-Batching**: Coalesces concurrent HTTP, gRPC, and streaming requests along `Axis(0)` within a configurable latency budget (`--max-delay-ms`) and batch cap (`--max-batch-size`).
@@ -156,7 +159,7 @@ Drop any of the following into `--models-dir` and SnoozeML will automatically di
 | **ONNX** | `.onnx` | [`ort`](https://github.com/pykeio/ort) (CPU, CUDA, TensorRT, CoreML) | PyTorch, Scikit-Learn, TensorFlow, and general deep learning models |
 | **Safetensors** | `.safetensors` + `config.json` | [`candle`](https://github.com/huggingface/candle) | Native Rust execution of BERT, RoBERTa, JinaBERT, NomicBERT, DistilBERT, CLIP, ViT, DINOv2, and MLPs |
 | **XGBoost / GBDT** | `.xgb.json`, `.tree.json`, `.xgb` | [`hessboost`](https://github.com/brndnmtthws/hessboost) | Pure-Rust, zero-FFI tabular tree inference (`python tools/train_tree.py --dataset iris --name iris_xgb`) |
-| **Python Worker** | Directory with `snooze_model.py` | Process-isolated binary IPC | Custom foundation models (e.g. Amazon Chronos-Bolt) that cannot be exported to ONNX |
+| **Python Worker** | Directory with `snooze_model.py` | Process-isolated binary IPC | Custom architectures (e.g. Amazon Chronos-Bolt time-series forecasting) that cannot be exported to ONNX |
 
 <details>
 <summary><strong>Writing a Custom Python Worker (<code>snooze_model.py</code>)</strong></summary>
@@ -338,20 +341,27 @@ cargo fmt --check
 # 4. Run the Python SDK & worker test suite
 pytest python/tests -v
 ```
+---
 
-# TODO
-- [x] Implement a way to pin a model at startup/loading by config and never deallocate it unless explicitly told to do so by the user (via CLI/API).
-- [x] Implement vertical scaling of the same model on a single device using multiple CPU cores or multiple GPUs
-  - [x] Implement a proper routing strategy to distribute requests across replicas of the same model
-- [x] Add gRPC interface support (high-performance SnoozeML-native Protobuf schema with raw tensor memory buffers, future Triton/KServe v2 compatibility)
-- [x] Implement a plugin system for custom safetensor and user-defined model architectures (process-isolated Python worker backend with binary length-prefixed wire protocol)
-- [x] Add documentation portal (Astro Starlight + Sphinx)
-- [x] Add Api-key support and Role Base Authenthication (JWT tokens)
-- [x] Add support for Kafka, RabbitMQ, Redis Streams and other message brokers.
-- [x] Add support for streaming
-- [x] **Python client**
-  - [x] both model management and inference
-  - [x] optional support for ONNX conversion under the hood (given a sklearn pipeline or torch model)
+## Roadmap
+
+SnoozeML is actively evolving. The following initiatives represent planned architectural enhancements and future milestones:
+
+- **gRPC Streaming & Bidirectional Inference**:
+  - Server-streaming (`InferStream`) for real-time sequence outputs, continuous sensor feeds, and time-series forecasting.
+  - Client-streaming and duplex channels for high-frequency continuous telemetry, audio, and video frame ingestion.
+- **Rust-Native Custom Runtime & WASM Plugins**:
+  - In-process dynamic plugin execution via native shared libraries (`cdylib`) and WebAssembly (Wasmtime/WASI) for zero-copy, zero-IPC pre/post-processing and custom operator kernels without Python worker overhead.
+- **Embedded & Edge Deployment Considerations**:
+  - Footprint minimization for resource-constrained systems, robotics, and edge gateways: static zero-dependency single-binary builds, headless minimal feature profiles, cross-compilation for ARM64 and RISC-V targets, strict host memory ceilings, and acceleration via Vulkan, WebGPU (`wgpu`), and Apple Metal (MPS).
+- **KServe v2 & Triton Protocol Parity**:
+  - Implementation of standard KServe v2 / Triton Data Plane specifications (REST & gRPC) for seamless drop-in compatibility with cloud-native ML mesh ecosystems (Kubernetes, Kubeflow, Istio).
+- **Distributed Fleet Coordination & Clustering**:
+  - Peer-to-peer cluster state synchronization and distributed scale-to-zero placement across multi-node daemon topologies with cluster-wide LRU eviction.
+- **Hardware Acceleration Expansion**:
+  - Dedicated native execution providers for NVIDIA TensorRT, OpenVINO, and Apple CoreML across all supported backends.
+- **DAG Pipeline Orchestration & Stateful Streaming**:
+  - Native multi-model directed acyclic graph (DAG) pipelines for chaining preprocessors, feature extractors, and downstream classifiers directly in-engine with zero serialization hops between stages.
 
 ---
 
