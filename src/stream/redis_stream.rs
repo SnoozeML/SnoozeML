@@ -5,7 +5,7 @@ use crate::types::InferenceError;
 use async_trait::async_trait;
 use redis::aio::ConnectionManager;
 use redis::streams::{StreamId, StreamKey, StreamReadReply};
-use redis::{cmd, AsyncCommands, Client, RedisError};
+use redis::{cmd, Client, RedisError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -170,8 +170,6 @@ impl StreamDriver for RedisStreamDriver {
             if k == "payload" || k == "data" {
                 if let redis::Value::BulkString(bytes) = v {
                     payload = bytes.clone();
-                } else if let redis::Value::Data(bytes) = v {
-                    payload = bytes.clone();
                 }
             } else if let redis::Value::BulkString(bytes) = v {
                 if let Ok(s) = std::str::from_utf8(bytes) {
@@ -182,10 +180,8 @@ impl StreamDriver for RedisStreamDriver {
 
         if payload.is_empty() {
             // Fallback: if no dedicated payload field, try first value
-            if let Some((_k, val)) = stream_id.map.iter().next() {
-                if let redis::Value::BulkString(bytes) = val {
-                    payload = bytes.clone();
-                }
+            if let Some((_k, redis::Value::BulkString(bytes))) = stream_id.map.iter().next() {
+                payload = bytes.clone();
             }
         }
 

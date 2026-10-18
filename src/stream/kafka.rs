@@ -3,7 +3,7 @@
 use crate::stream::driver::{ConsumedMessage, MessageAcknowledger, StreamDriver};
 use crate::types::InferenceError;
 use async_trait::async_trait;
-use rskafka::client::partition::{OffsetAt, PartitionClient};
+use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::{Client, ClientBuilder};
 use rskafka::record::Record;
 use std::collections::HashMap;
@@ -71,11 +71,15 @@ impl KafkaStreamDriver {
             return Ok(pc.clone());
         }
 
-        let pc = self.client.partition_client(topic, 0).await.map_err(|e| {
-            InferenceError::Runtime(format!(
-                "Failed to get Kafka partition client for '{topic}': {e}"
-            ))
-        })?;
+        let pc = self
+            .client
+            .partition_client(topic, 0, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| {
+                InferenceError::Runtime(format!(
+                    "Failed to get Kafka partition client for '{topic}': {e}"
+                ))
+            })?;
 
         let arc_pc = Arc::new(pc);
         *guard = Some(arc_pc.clone());
@@ -96,7 +100,11 @@ impl StreamDriver for KafkaStreamDriver {
     ) -> Result<(), InferenceError> {
         // Attempt to access partition 0 metadata; if not present and auto.create.topics is enabled,
         // broker creates it, or controller handles topic provisioning.
-        match self.client.partition_client(topic_name, 0).await {
+        match self
+            .client
+            .partition_client(topic_name, 0, UnknownTopicHandling::Retry)
+            .await
+        {
             Ok(_) => Ok(()),
             Err(e) => {
                 let err_str = e.to_string();
@@ -137,11 +145,11 @@ impl StreamDriver for KafkaStreamDriver {
             Ok((records, _high_watermark)) => {
                 if let Some(record_and_offset) = records.into_iter().next() {
                     let msg_offset = record_and_offset.offset;
-                    let payload = record_and_offset.record.record.value.unwrap_or_default();
+                    let payload = record_and_offset.record.value.unwrap_or_default();
                     let message_id = msg_offset.to_string();
 
                     let mut headers = HashMap::new();
-                    for (k, v) in record_and_offset.record.record.headers {
+                    for (k, v) in record_and_offset.record.headers {
                         if let Ok(val_str) = std::str::from_utf8(&v) {
                             headers.insert(k, val_str.to_string());
                         }
@@ -177,9 +185,15 @@ impl StreamDriver for KafkaStreamDriver {
     }
 
     async fn publish(&self, topic: &str, payload: &[u8]) -> Result<(), InferenceError> {
-        let pc = self.client.partition_client(topic, 0).await.map_err(|e| {
-            InferenceError::Runtime(format!("Failed to get partition client for '{topic}': {e}"))
-        })?;
+        let pc = self
+            .client
+            .partition_client(topic, 0, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| {
+                InferenceError::Runtime(format!(
+                    "Failed to get partition client for '{topic}': {e}"
+                ))
+            })?;
 
         let record = Record {
             key: None,
@@ -188,14 +202,13 @@ impl StreamDriver for KafkaStreamDriver {
             timestamp: rskafka::chrono::Utc::now(),
         };
 
-        pc.produce(
-            vec![record],
-            rskafka::client::producer::aggregator::RecordAggregator::new(1024),
-        )
-        .await
-        .map_err(|e| {
-            InferenceError::Runtime(format!("Failed to produce Kafka message to '{topic}': {e}"))
-        })?;
+        pc.produce(vec![record], Compression::NoCompression)
+            .await
+            .map_err(|e| {
+                InferenceError::Runtime(format!(
+                    "Failed to produce Kafka message to '{topic}': {e}"
+                ))
+            })?;
 
         Ok(())
     }

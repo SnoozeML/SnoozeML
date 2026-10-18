@@ -259,21 +259,36 @@ role = "inference" # "readonly" | "inference" | "admin"
 
 ---
 
-## Docker Deployment
+## Docker & Multi-Architecture Deployment
 
-Build and run SnoozeML in a minimal non-root container (`debian:trixie-slim`) mounting your local `./models` directory:
+SnoozeML provides an optimized multi-target [`Dockerfile`](Dockerfile) supporting **AMD64 (`x86_64`)** and **ARM64 (`aarch64`)** with layer caching via [`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef):
 
 ```bash
-# Build and start via Docker Compose (exposes HTTP :8080 and gRPC :50051)
-docker compose up -d --build
+# 1. Slim: ultra-compact, zero Python runtime (~120 MB)
+docker build --target slim -t snooze-ml:slim .
 
-# Or run directly with Docker
-docker build -t snoozeml:latest .
-docker run -d --name snoozeml \
-  -p 8080:8080 -p 50051:50051 \
-  -v "$(pwd)/models:/models" \
-  snoozeml:latest
+# 2. CPU: standard CPU inference with lean Python worker venv (~280 MB)
+docker build --target cpu -t snooze-ml:cpu .
+
+# 3. CUDA: full GPU acceleration via ONNX Runtime CUDA + cuDNN + lean Python
+docker build --target cuda -t snooze-ml:cuda .
 ```
+
+### Declarative Multi-Arch Builds & Docker Compose
+
+```bash
+# Compile multi-architecture images (linux/amd64 + linux/arm64) via Buildx Bake
+docker buildx bake cpu
+docker buildx bake slim
+docker buildx bake all
+
+# Or start services directly via Docker Compose
+docker compose up snooze-cpu   # HTTP :8081, gRPC :50052
+docker compose up snooze-slim  # HTTP :8080, gRPC :50051
+docker compose up snooze-cuda  # HTTP :8082, gRPC :50053 (--gpus all)
+```
+
+See the [Production Deployment Guide](docs/src/content/docs/operations/production.md) for full container hardening and security guidelines.
 
 ---
 

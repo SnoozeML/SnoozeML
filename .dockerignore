@@ -26,3 +26,4 @@ models/
 
 # Docker files
 docker-compose*.yml
+docker-bake*.hcl

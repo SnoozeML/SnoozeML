@@ -5184,6 +5184,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "crossterm",
+ "futures-lite 2.6.1",
  "hessboost",
  "hf-hub",
  "http-body-util",

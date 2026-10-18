@@ -1,25 +1,53 @@
 services:
-  snoozeml:
+  snooze-slim:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: snoozeml:latest
-    container_name: snoozeml
-    restart: unless-stopped
+      target: slim
+    image: snooze-ml:slim
+    container_name: snooze-slim
     ports:
       - "8080:8080"
       - "50051:50051"
     volumes:
-      # Mount host models directory into container models volume
-      - ./models:/models
+      - ./models:/models:ro
     environment:
       - RUST_LOG=info
-      - SNOOZE_MODELS_DIR=/models
-      # Optional: uncomment to enable JWT authentication enforcement
-      # - SNOOZE_JWT_SECRET=your-production-jwt-secret-key-at-least-32-chars
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
+    restart: unless-stopped
+
+  snooze-cpu:
+    build:
+      context: .
+      target: cpu
+    image: snooze-ml:cpu
+    container_name: snooze-cpu
+    ports:
+      - "8081:8080"
+      - "50052:50051"
+    volumes:
+      - ./models:/models:ro
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+
+  snooze-cuda:
+    profiles: ["gpu", "cuda"]
+    build:
+      context: .
+      target: cuda
+    image: snooze-ml:cuda
+    container_name: snooze-cuda
+    ports:
+      - "8082:8080"
+      - "50053:50051"
+    volumes:
+      - ./models:/models:ro
+    environment:
+      - RUST_LOG=info
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

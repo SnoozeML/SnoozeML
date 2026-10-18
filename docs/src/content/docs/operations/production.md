@@ -87,16 +87,55 @@ sudo systemctl status snoozeml
 
 ## 2. Container Deployment (Docker & Kubernetes)
 
-SnoozeML's official container image is engineered for high-concurrency production environments:
-- **Non-Root Execution**: Runs as dedicated unprivileged user `appuser` (UID `10001`).
-- **Minimal Attack Surface**: Based on Debian Bookworm Slim, containing only necessary runtime libraries (`libssl3`, `ca-certificates`, `libgomp1`, `curl`).
-- **Native Health Probes**: Incorporates built-in Docker `HEALTHCHECK` mapped to `/health/live`.
+SnoozeML provides an optimized, multi-target Dockerfile supporting both **AMD64 (`x86_64`)** and **ARM64 (`aarch64`)** across three distinct deployment tiers:
 
-### Production Docker Run Command
+### 2.1 Multi-Target Build Matrix
+
+| Image Target | Features & Backends | Python Support | Architectures | Best For |
+| :--- | :--- | :--- | :--- | :--- |
+| **`slim`** | ONNX Runtime (CPU), Candle Safetensors, Tree models, Base streams | ❌ None (zero Python runtime) | `linux/amd64`<br/>`linux/arm64` | Edge gateways, microservices, minimal CVE surface (~144 MB) |
+| **`cpu`** | All backends, all streaming brokers (`streams-all`), Python worker | ✅ Lean Python 3 + venv (`numpy`) | `linux/amd64`<br/>`linux/arm64` | Standard CPU deployments, custom Python workers (~344 MB) |
+| **`cuda`** | All backends, ONNX CUDA (`ort?/cuda`), TensorRT, streams, Python worker | ✅ Lean Python 3 + venv (`numpy`) | `linux/amd64` | GPU servers (NVIDIA RTX / A100 / H100 / L4, ~426 MB) |
+
+> [!NOTE]
+> All targets utilize [`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef) to cache compiled dependency layers independently, ensuring lightning-fast incremental builds when source code changes.
+
+### 2.2 Building Containers
+
+Build your desired target using Docker BuildKit:
 
 ```bash
+# 1. Build the lightweight Slim target
+docker build --target slim -t snooze-ml:slim .
+
+# 2. Build the standard CPU + Python target
+docker build --target cpu -t snooze-ml:cpu .
+
+# 3. Build the CUDA GPU target
+docker build --target cuda -t snooze-ml:cuda .
+```
+
+#### Declarative Multi-Arch Builds (`docker-bake.hcl`)
+
+With `docker-bake.hcl`, you can compile cross-platform images for both AMD64 and ARM64 in parallel:
+
+```bash
+# Build multi-architecture slim images for AMD64 and ARM64
+docker buildx bake slim
+
+# Build standard CPU images for AMD64 and ARM64
+docker buildx bake cpu
+
+# Build all three targets across both architectures simultaneously
+docker buildx bake all
+```
+
+### 2.3 Production Docker Run Examples
+
+#### Slim Production Runner (CPU, read-only filesystem)
+```bash
 docker run -d \
-  --name snoozeml \
+  --name snoozeml-slim \
   --restart unless-stopped \
   --read-only \
   --cap-drop=ALL \
@@ -105,40 +144,35 @@ docker run -d \
   -p 50051:50051 \
   -v /var/data/snoozeml/models:/models:ro \
   -e RUST_LOG=info \
-  -e SNOOZE_JWT_SECRET="your-production-secret-key-32-chars-long" \
-  snoozeml:latest
+  snooze-ml:slim
 ```
 
-### Production Docker Compose (`docker-compose.prod.yml`)
+#### CUDA GPU Runner
+```bash
+docker run -d \
+  --name snoozeml-gpu \
+  --restart unless-stopped \
+  --gpus all \
+  -p 8080:8080 \
+  -p 50051:50051 \
+  -v /var/data/snoozeml/models:/models:ro \
+  -e RUST_LOG=info \
+  snooze-ml:cuda
+```
 
-```yaml
-version: "3.8"
+### 2.4 Multi-Service Docker Compose (`docker-compose.yml`)
 
-services:
-  snoozeml:
-    image: snoozeml:latest
-    container_name: snoozeml
-    restart: always
-    read_only: true
-    cap_drop:
-      - ALL
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-    ports:
-      - "8080:8080"   # HTTP REST & Telemetry
-      - "50051:50051" # Binary gRPC Inference & Health
-    volumes:
-      - ./models:/models:ro
-    environment:
-      - RUST_LOG=info
-      - SNOOZE_MODELS_DIR=/models
-      - SNOOZE_JWT_SECRET=${SNOOZE_JWT_SECRET}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
+Use the repository's root [`docker-compose.yml`](docker-compose.yml) to run any variant locally:
+
+```bash
+# Run slim
+docker compose up snooze-slim
+
+# Run CPU with Python worker support
+docker compose up snooze-cpu
+
+# Run GPU-accelerated container
+docker compose up snooze-cuda
 ```
 
 ---
