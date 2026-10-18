@@ -1,0 +1,180 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Optional release tag to publish (leave empty for build-only artifact verification)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-unix:
+    name: Build (${{ matrix.artifact_name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact_name: snooze-linux-x86_64
+            features: "streams-all"
+            rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_name: snooze-linux-aarch64
+            features: "streams-all"
+            rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact_name: snooze-macos-aarch64
+            features: "streams-all,coreml"
+            rpath_flags: "-C link-arg=-Wl,-rpath,@executable_path/../lib -C link-arg=-Wl,-rpath,@executable_path"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libssl-dev \
+            ca-certificates \
+            build-essential
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-${{ matrix.features }}
+
+      - name: Build release binary
+        env:
+          RUSTFLAGS: ${{ matrix.rpath_flags }}
+        run: |
+          cargo build --release --bin snooze --target ${{ matrix.target }} --features "${{ matrix.features }}"
+
+      - name: Package tarball and SHA-256 checksum
+        run: |
+          mkdir -p dist/${{ matrix.artifact_name }}/bin dist/${{ matrix.artifact_name }}/lib
+          cp target/${{ matrix.target }}/release/snooze dist/${{ matrix.artifact_name }}/bin/snooze
+          strip dist/${{ matrix.artifact_name }}/bin/snooze || true
+
+          # Bundle any ONNX Runtime shared libraries downloaded by ort during build
+          find target/${{ matrix.target }}/release -maxdepth 4 \
+            \( -name "libonnxruntime*.so*" -o -name "libonnxruntime*.dylib*" \) \
+            -exec cp -P {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
+
+          cp LICENSE README.md install.sh dist/${{ matrix.artifact_name }}/
+          tar -C dist -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
+          else
+            shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
+          fi
+
+      - name: Smoke test packaged binary
+        run: |
+          ./dist/${{ matrix.artifact_name }}/bin/snooze --version
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ matrix.artifact_name }}.tar.gz
+            ${{ matrix.artifact_name }}.tar.gz.sha256
+
+  build-windows:
+    name: Build (snooze-windows-x86_64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc-streams-all
+
+      - name: Build release binary
+        run: |
+          cargo build --release --bin snooze --target x86_64-pc-windows-msvc --features "streams-all"
+
+      - name: Package zip archive and SHA-256 checksum
+        shell: pwsh
+        run: |
+          $pkgDir = "dist/snooze-windows-x86_64/bin"
+          New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/snooze.exe" -Destination "$pkgDir/snooze.exe"
+
+          Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release" -Recurse -Filter "*onnxruntime*.dll" -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName -Destination $pkgDir -Force }
+
+          Copy-Item "LICENSE", "README.md", "install.ps1" -Destination "dist/snooze-windows-x86_64/"
+          Compress-Archive -Path "dist/snooze-windows-x86_64/*" -DestinationPath "snooze-windows-x86_64.zip" -Force
+
+          $hash = (Get-FileHash -Path "snooze-windows-x86_64.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  snooze-windows-x86_64.zip" | Out-File -FilePath "snooze-windows-x86_64.zip.sha256" -Encoding ascii -NoNewline
+
+      - name: Smoke test packaged binary
+        shell: pwsh
+        run: |
+          ./dist/snooze-windows-x86_64/bin/snooze.exe --version
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snooze-windows-x86_64
+          path: |
+            snooze-windows-x86_64.zip
+            snooze-windows-x86_64.zip.sha256
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-unix, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Copy installer scripts to release assets
+        run: |
+          cp install.sh install.ps1 release-assets/
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*

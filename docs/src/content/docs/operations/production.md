@@ -9,9 +9,44 @@ This guide covers operational best practices, deployment patterns, and OS tuning
 
 ## 1. Systemd Service Deployment (Bare Metal / VM)
 
-Running SnoozeML as a systemd service ensures automatic restarts, structured journal logging, and clean startup on boot:
+Running SnoozeML as a systemd service ensures automatic restarts, structured journal logging, and clean startup on boot. You can run SnoozeML either as a **rootless user service** (no `sudo` required, created automatically by `install.sh`) or as a **system-wide service**.
 
-### `/etc/systemd/system/snoozeml.service`
+### 1.1 Rootless User Service (`~/.config/systemd/user/snooze.service`)
+
+Because SnoozeML binds to unprivileged ports by default (`:8080` and `:50051`), it can run entirely under an unprivileged user account without `sudo`:
+
+```ini
+[Unit]
+Description=SnoozeML High-Performance Inference Daemon (User Service)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/snooze serve --models-dir %h/.local/share/snoozeml/models
+Restart=on-failure
+RestartSec=5
+Environment="RUST_LOG=info"
+Environment="SNOOZE_MODELS_DIR=%h/.local/share/snoozeml/models"
+
+[Install]
+WantedBy=default.target
+```
+
+Manage the user service without `sudo`:
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now snooze.service
+systemctl --user status snooze.service
+journalctl --user -u snooze.service -f
+```
+
+> [!TIP]
+> On headless Linux servers, if you want your rootless user service to start at boot and remain running after you log out of SSH, enable systemd user lingering once with `loginctl enable-linger $USER`.
+
+### 1.2 System-Wide Service (`/etc/systemd/system/snoozeml.service`)
+
+For shared multi-tenant servers managed by a dedicated system user (`snooze`):
+
 ```ini
 [Unit]
 Description=SnoozeML High-Performance Inference Daemon

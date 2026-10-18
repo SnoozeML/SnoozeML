@@ -1,22 +1,65 @@
 ---
 title: "Installation & Build"
-description: "SnoozeML compiles down to a single, statically or dynamically linked binary called `snooze`. It has no external Python or Java runtime dependencies."
+description: "Install SnoozeML with a single zero-sudo command on Linux, macOS, and Windows, or compile from source with Cargo and Docker."
 ---
 
-SnoozeML compiles down to a single, statically or dynamically linked binary called `snooze`. It has no external Python or Java runtime dependencies.
+SnoozeML compiles down to a single standalone binary called `snooze`. You can install prebuilt binaries with a single command (without needing `sudo` or Administrator privileges) or compile from source with custom hardware acceleration flags.
 
 ---
 
-## 1. Prerequisites
+## 1. One-Line Install (Recommended — Zero `sudo`)
 
-Before building SnoozeML, ensure your system has the following development tools installed:
+### Linux & macOS
+
+Run the official install script to download the prebuilt `snooze` binary and bundled ONNX Runtime libraries for your architecture (`x86_64` or `aarch64` / Apple Silicon), verify its SHA-256 checksum, and set up a rootless background daemon:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh
+```
+
+**What this does (without requiring `sudo`):**
+- Installs the binary and shared libraries to `~/.local/share/snoozeml/` and symlinks `~/.local/bin/snooze`.
+- Initializes a default models directory at `~/.local/share/snoozeml/models` with `models.toml`.
+- **On Linux (`systemd`)**: Creates and starts a user-mode systemd unit at `~/.config/systemd/user/snooze.service`.
+- **On macOS (`launchd`)**: Creates and loads a user LaunchAgent at `~/Library/LaunchAgents/io.snoozeml.daemon.plist`.
+
+#### Installer Options & Uninstalling
+
+You can customize the installation by passing flags after `sh -s --`:
+
+```bash
+# Install binary only without creating or starting the background daemon
+curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --no-service
+
+# Install a specific release version
+curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --version v0.1.0
+
+# Uninstall the background service and binary (preserves your models directory)
+curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --uninstall
+```
+
+### Windows (PowerShell)
+
+On Windows (`x86_64`), run the PowerShell installer (no Administrator privileges required):
+
+```powershell
+irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
+```
+
+This extracts `snooze.exe` and bundled ONNX Runtime DLLs into `%LOCALAPPDATA%\Programs\SnoozeML\bin`, initializes `%LOCALAPPDATA%\Programs\SnoozeML\models`, and adds the binary directory to your user `PATH`.
+
+---
+
+## 2. Prerequisites for Building from Source
+
+If you prefer to compile SnoozeML from source (for example, to enable custom CUDA or TensorRT features), ensure your system has the following development tools installed:
 
 - **Rust & Cargo**: Version 1.75 or later. Install via [rustup.rs](https://rustup.rs/):
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
 - **C/C++ Build Essentials**: Required to link native execution providers (ONNX Runtime / Candle):
-  - **Linux (Ubuntu/Debian)**: `sudo apt-get install build-essential cmake pkg-config`
+  - **Linux (Ubuntu/Debian)**: `sudo apt-get install build-essential cmake pkg-config libssl-dev`
   - **macOS**: `xcode-select --install` and `brew install cmake`
   - **Windows**: Visual Studio 2022 Build Tools (with the "Desktop development with C++" workload) and CMake.
 - **(Optional) Documentation Tools**: If you wish to build or preview this documentation portal locally:
@@ -28,7 +71,7 @@ Before building SnoozeML, ensure your system has the following development tools
 
 ---
 
-## 2. Installing via Cargo
+## 3. Installing via Cargo
 
 You can install SnoozeML directly into your Cargo binary path:
 
@@ -46,7 +89,7 @@ The resulting `snooze` binary will be available in your `$HOME/.cargo/bin` direc
 
 ---
 
-## 3. Compiling from Source
+## 4. Compiling from Source
 
 Clone the repository:
 
@@ -78,7 +121,7 @@ Once compilation completes, the standalone executable is placed at:
 
 ---
 
-## 4. Container Image Build (Docker)
+## 5. Container Image Build (Docker)
 
 SnoozeML includes a high-performance multi-stage Docker build pipeline powered by [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) on Debian Trixie (`lukemathwalker/cargo-chef:latest-rust-1-slim-trixie` and `debian:trixie-slim`). It caches all third-party crate dependencies in a dedicated layer (`cargo chef cook`), allowing near-instant rebuilds (~0.3s cached) while generating a lean, non-root runtime image (~200MB).
 
@@ -128,7 +171,7 @@ docker compose up -d
 
 ---
 
-## 5. Verifying the Installation
+## 6. Verifying the Installation
 
 Verify that the CLI is accessible and inspect the available commands:
 
@@ -165,7 +208,7 @@ Options:
 
 ---
 
-## 6. Helpful Environment Variables
+## 7. Helpful Environment Variables
 
 SnoozeML respects several environment variables to streamline configuration in containerized and cloud environments:
 

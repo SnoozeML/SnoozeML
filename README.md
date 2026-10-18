@@ -37,7 +37,21 @@
 
 Get a real Hugging Face embedding model (`BAAI/bge-small-en-v1.5`) running end-to-end in under two minutes.
 
-### 1. Build or Pull SnoozeML
+### 1. Install or Build SnoozeML
+
+**One-Line Install (Linux & macOS — Zero `sudo` Required):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh
+```
+
+This downloads the prebuilt `snooze` binary and bundled ONNX Runtime libraries into `~/.local/share/snoozeml`, links `~/.local/bin/snooze`, initializes `~/.local/share/snoozeml/models`, and automatically starts a rootless background service (`systemd --user` on Linux, `LaunchAgent` on macOS). Pass `-- --no-service` to skip starting the background daemon, or `-- --uninstall` to remove it.
+
+**Windows (PowerShell — Zero Admin Required):**
+
+```powershell
+irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
+```
 
 **From Source (Rust 1.75+):**
 
@@ -68,16 +82,16 @@ The standalone binary is compiled to `./target/release/snooze` (add it to your `
 Use the built-in Hugging Face Hub client to download `BAAI/bge-small-en-v1.5` directly into `./models` and auto-generate `./models/models.toml`:
 
 ```bash
-./target/release/snooze download BAAI/bge-small-en-v1.5 \
+snooze download BAAI/bge-small-en-v1.5 \
   --include "*.safetensors,config.json,tokenizer.json"
 ```
 
 ### 3. Start the Daemon & Run Inference
 
-Start the server pointing to `./models` (serves HTTP on `:8080` and gRPC on `:50051`):
+If you did not enable the background daemon during installation, start the server pointing to `./models` (serves HTTP on `:8080` and gRPC on `:50051`):
 
 ```bash
-./target/release/snooze serve --models-dir ./models
+snooze serve --models-dir ./models
 ```
 
 In another terminal, send an inference request with token IDs (`[CLS] hello world [SEP]`):
