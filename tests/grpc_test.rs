@@ -318,16 +318,8 @@ async fn test_grpc_authentication_enforcement() {
         enabled: true,
         protect_metrics: false,
         api_keys: vec![
-            ApiKeyConfig {
-                key: "sk-infer-key-123".to_string(),
-                role: Role::Inference,
-                name: Some("infer-user".to_string()),
-            },
-            ApiKeyConfig {
-                key: "sk-read-key-456".to_string(),
-                role: Role::ReadOnly,
-                name: Some("read-user".to_string()),
-            },
+            ApiKeyConfig::new("sk-infer-key-123", Role::Inference).with_name("infer-user"),
+            ApiKeyConfig::new("sk-read-key-456", Role::ReadOnly).with_name("read-user"),
         ],
         jwt: None,
     };

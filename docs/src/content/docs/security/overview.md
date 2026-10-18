@@ -18,19 +18,19 @@ flowchart TD
     PubCheck -- No --> AuthEnabled{Is Auth Enabled<br>in Config / CLI?}
     AuthEnabled -- No --> InjectAnon[Inject Anonymous Admin] --> Handler
     AuthEnabled -- Yes --> ExtractCreds[Extract Credential<br>x-api-key or authorization]
-    
+
     ExtractCreds -- Missing --> Err401[401 Unauthorized / Status::Unauthenticated<br>Missing Credentials]
     ExtractCreds -- Found --> MatchKey{Matches Configured<br>API Key? Constant-Time ct_eq}
-    
+
     MatchKey -- Yes --> IdentityKey[Resolve Identity<br>Role from ApiKeyConfig]
     MatchKey -- No --> IsJwt{Valid JWT Signature<br>& Unexpired?}
-    
+
     IsJwt -- Yes --> IdentityJwt[Resolve Identity<br>Role from Claims]
     IsJwt -- No --> Err401Invalid[401 Unauthorized / Status::Unauthenticated<br>Invalid or Expired Token]
-    
+
     IdentityKey --> RoleCheck{Caller Role >=<br>Required Role?}
     IdentityJwt --> RoleCheck
-    
+
     RoleCheck -- No --> Err403[403 Forbidden / Status::PermissionDenied<br>Insufficient Role Permissions]
     RoleCheck -- Yes --> InjectIdentity[Authorize Request]
     InjectIdentity --> Handler
@@ -70,8 +70,9 @@ Authentication can be enabled in three ways:
    ```toml
    [auth]
    enabled = true
+   protect_metrics = false # Optional: require Admin role on /metrics
    ```
-2. **Via CLI flags on `snooze serve`**:
+2. **Via Environment Variables**:
+   Setting `SNOOZE_API_KEY` (defaults to Admin role, or `<role>:<key>`), `SNOOZE_API_KEYS` (comma-separated list), role-specific variables (`SNOOZE_API_KEY_ADMIN`, `SNOOZE_API_KEY_INFER`, `SNOOZE_API_KEY_READONLY`), or `SNOOZE_JWT_SECRET` automatically activates authentication and verifies credentials without needing any secrets in `models.toml`.
+3. **Via CLI flags on `snooze serve`**:
    Passing any `--api-key` or `--jwt-secret` flag automatically activates authentication enforcement. You can also explicitly pass `--auth-enabled`.
-3. **Via Environment Variables**:
-   Setting `SNOOZE_JWT_SECRET` automatically activates token validation.

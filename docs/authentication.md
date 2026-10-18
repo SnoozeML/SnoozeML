@@ -15,19 +15,19 @@ flowchart TD
     PubCheck -- No --> AuthEnabled{Is Auth Enabled\nin Config / CLI?}
     AuthEnabled -- No --> InjectAnon[Inject Anonymous Admin] --> Handler
     AuthEnabled -- Yes --> ExtractCreds[Extract Credential\nX-API-Key or Authorization]
-    
+
     ExtractCreds -- Missing --> Err401[401 Unauthorized\nMissing Credentials]
     ExtractCreds -- Found --> MatchKey{Matches Configured\nAPI Key? Constant-Time ct_eq}
-    
+
     MatchKey -- Yes --> IdentityKey[Resolve Identity\nRole from ApiKeyConfig]
     MatchKey -- No --> IsJwt{Valid JWT Signature\n& Unexpired?}
-    
+
     IsJwt -- Yes --> IdentityJwt[Resolve Identity\nRole from Claims]
     IsJwt -- No --> Err401Invalid[401 Unauthorized\nInvalid or Expired Token]
-    
+
     IdentityKey --> RoleCheck{Caller Role >=\nEndpoint Minimum Role?}
     IdentityJwt --> RoleCheck
-    
+
     RoleCheck -- No --> Err403[403 Forbidden\nInsufficient Role Permissions]
     RoleCheck -- Yes --> InjectIdentity[Inject AuthIdentity into Request Extensions]
     InjectIdentity --> Handler
@@ -64,9 +64,37 @@ $$\text{Admin} > \text{Inference} > \text{ReadOnly}$$
 
 ## 3. Configuration
 
-Authentication can be configured via `models.toml`, CLI arguments on `snooze serve`, or environment variables.
+Authentication can be configured via `models.toml`, environment variables, or CLI arguments on `snooze serve`.
 
-### 3.1 Via `models.toml` Configuration File
+> [!IMPORTANT]
+> Plaintext secrets should **not** be stored in `models.toml`. Instead, enable authentication in `models.toml` via `[auth] enabled = true` and provide secrets via environment variables, or use `key_env` / `secret_env` to map to variable names.
+
+### 3.1 Via Environment Variables (Recommended)
+
+Simply set `[auth] enabled = true` in `models.toml`:
+```toml
+[auth]
+enabled = true
+```
+
+And configure secrets through environment variables:
+```bash
+# Single key (defaults to Admin role, or role:key)
+export SNOOZE_API_KEY="sk-admin-secret-987"
+
+# Or multiple comma-separated keys with roles
+export SNOOZE_API_KEYS="admin:sk-admin-secret-987,inference:sk-infer-client-654,ro:sk-ro-monitor-321"
+
+# Or role-specific variables
+export SNOOZE_API_KEY_ADMIN="sk-admin-secret-987"
+export SNOOZE_API_KEY_INFER="sk-infer-client-654"
+export SNOOZE_API_KEY_READONLY="sk-ro-monitor-321"
+
+# JWT secret
+export SNOOZE_JWT_SECRET="your-secure-jwt-hmac-shared-secret-at-least-32-chars"
+```
+
+### 3.2 Via `models.toml` Configuration File (using `key_env` & `secret_env`)
 
 ```toml
 [auth]
@@ -75,30 +103,30 @@ protect_metrics = false # Set true to require Admin role on /metrics
 
 # Optional HMAC-based JSON Web Token validation
 [auth.jwt]
-secret = "your-secure-jwt-hmac-shared-secret-at-least-32-chars"
-algorithm = "HS256"      # HS256 (default), HS384, HS512
-issuer = "snoozeml-auth" # Optional: validate iss claim
-audience = "snoozeml"    # Optional: validate aud claim
-leeway_secs = 60         # Clock drift allowance in seconds
+secret_env = "SNOOZE_JWT_SECRET" # Resolve secret from environment variable
+algorithm = "HS256"             # HS256 (default), HS384, HS512
+issuer = "snoozeml-auth"        # Optional: validate iss claim
+audience = "snoozeml"           # Optional: validate aud claim
+leeway_secs = 60                # Clock drift allowance in seconds
 
-# Static API Keys
+# Static API Keys mapped to environment variables
 [[auth.api_keys]]
-key = "sk-admin-secret-987"
-role = "admin"
 name = "cluster-admin"
+key_env = "SNOOZE_API_KEY_ADMIN"
+role = "admin"
 
 [[auth.api_keys]]
-key = "sk-infer-client-654"
-role = "inference"
 name = "web-client"
+key_env = "SNOOZE_API_KEY_INFER"
+role = "inference"
 
 [[auth.api_keys]]
-key = "sk-ro-monitor-321"
-role = "read_only"
 name = "dashboard-crawler"
+key_env = "SNOOZE_API_KEY_READONLY"
+role = "read_only"
 ```
 
-### 3.2 Via CLI Flags on `snooze serve`
+### 3.3 Via CLI Flags on `snooze serve`
 
 ```bash
 # Start server with static API keys and a JWT secret
@@ -108,13 +136,6 @@ snooze serve \
   --api-key infer:sk-infer-client-654 \
   --jwt-secret "your-secure-jwt-hmac-shared-secret-at-least-32-chars" \
   --protect-metrics
-```
-
-### 3.3 Via Environment Variables
-
-```bash
-export SNOOZE_JWT_SECRET="your-secure-jwt-hmac-shared-secret-at-least-32-chars"
-snooze serve --demo --api-key infer:sk-infer-client-654
 ```
 
 ---

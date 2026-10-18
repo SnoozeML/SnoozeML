@@ -165,24 +165,25 @@ max_batch_size = 64
 max_batch_delay_ms = 5
 idle_timeout_secs = 300
 
-# Optional Authentication Configuration
+# Optional Authentication Configuration (keep secrets out of config files)
 [auth]
 enabled = true
 protect_metrics = false
 
 [auth.jwt]
-secret = "your-jwt-shared-secret-key-at-least-32-chars"
+secret_env = "SNOOZE_JWT_SECRET"
 algorithm = "HS256"
 
+# Declare named keys mapped to environment variable names:
 [[auth.api_keys]]
-key = "sk-admin-secret-987"
-role = "admin"
 name = "cluster-admin"
+key_env = "SNOOZE_API_KEY_ADMIN"
+role = "admin"
 
 [[auth.api_keys]]
-key = "sk-infer-client-654"
-role = "inference"
 name = "web-client"
+key_env = "SNOOZE_API_KEY_INFER"
+role = "inference"
 ```
 
 ### Autoscaling & Replica Limits Reference

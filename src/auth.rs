@@ -44,6 +44,26 @@ impl std::fmt::Display for Role {
     }
 }
 
+impl Role {
+    /// Parses a role from a string slice (case-insensitive: "admin", "infer", "read_only", etc.).
+    #[must_use]
+    pub fn parse_str(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "admin" | "administrator" => Self::Admin,
+            "read" | "readonly" | "read_only" | "ro" => Self::ReadOnly,
+            _ => Self::Inference,
+        }
+    }
+}
+
+impl std::str::FromStr for Role {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::parse_str(s))
+    }
+}
+
 /// Authentication mechanism used by the client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,12 +103,75 @@ impl AuthIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKeyConfig {
     /// Secret API key string.
-    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Environment variable name from which to load the API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
     /// Role assigned to callers presenting this key.
     pub role: Role,
     /// Descriptive name or identifier for this key (e.g. "ci-runner", "client-app").
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+impl ApiKeyConfig {
+    /// Creates a new API key configuration from a raw key string.
+    #[must_use]
+    pub fn new(key: impl Into<String>, role: Role) -> Self {
+        Self {
+            key: Some(key.into()),
+            key_env: None,
+            role,
+            name: None,
+        }
+    }
+
+    /// Creates a new API key configuration resolved from an environment variable name.
+    #[must_use]
+    pub fn from_env(key_env: impl Into<String>, role: Role) -> Self {
+        Self {
+            key: None,
+            key_env: Some(key_env.into()),
+            role,
+            name: None,
+        }
+    }
+
+    /// Sets the descriptive name for this API key.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Resolves the actual secret key, checking `key_env` first, then `$VAR` expansion in `key`, then raw `key`.
+    #[must_use]
+    pub fn resolve_key(&self) -> Option<String> {
+        if let Some(ref env_var) = self.key_env {
+            if let Ok(val) = std::env::var(env_var) {
+                let trimmed = val.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        if let Some(ref k) = self.key {
+            let trimmed = k.trim();
+            if let Some(var_name) = trimmed.strip_prefix('$') {
+                if let Ok(val) = std::env::var(var_name) {
+                    let env_trimmed = val.trim();
+                    if !env_trimmed.is_empty() {
+                        return Some(env_trimmed.to_string());
+                    }
+                }
+            }
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        None
+    }
 }
 
 /// Supported cryptographic signature algorithms for JWT verification.
@@ -118,7 +201,11 @@ impl From<JwtAlgorithm> for Algorithm {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JwtConfig {
     /// Shared secret key used to verify HMAC signatures.
-    pub secret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Environment variable name from which to load the HMAC secret (defaults to `SNOOZE_JWT_SECRET`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_env: Option<String>,
     /// Expected cryptographic algorithm (defaults to `HS256`).
     #[serde(default)]
     pub algorithm: JwtAlgorithm,
@@ -131,6 +218,81 @@ pub struct JwtConfig {
     /// Clock skew leeway in seconds (defaults to 60s).
     #[serde(default = "default_leeway_secs")]
     pub leeway_secs: u64,
+}
+
+impl Default for JwtConfig {
+    fn default() -> Self {
+        Self {
+            secret: None,
+            secret_env: None,
+            algorithm: JwtAlgorithm::HS256,
+            issuer: None,
+            audience: None,
+            leeway_secs: 60,
+        }
+    }
+}
+
+impl JwtConfig {
+    /// Creates a new JWT configuration with a raw shared secret.
+    #[must_use]
+    pub fn new(secret: impl Into<String>) -> Self {
+        Self {
+            secret: Some(secret.into()),
+            secret_env: None,
+            algorithm: JwtAlgorithm::HS256,
+            issuer: None,
+            audience: None,
+            leeway_secs: 60,
+        }
+    }
+
+    /// Creates a new JWT configuration resolved from an environment variable name.
+    #[must_use]
+    pub fn from_env(secret_env: impl Into<String>) -> Self {
+        Self {
+            secret: None,
+            secret_env: Some(secret_env.into()),
+            algorithm: JwtAlgorithm::HS256,
+            issuer: None,
+            audience: None,
+            leeway_secs: 60,
+        }
+    }
+
+    /// Resolves the HMAC secret string from `secret_env`, `$VAR` in `secret`, raw `secret`, or `SNOOZE_JWT_SECRET`.
+    #[must_use]
+    pub fn resolve_secret(&self) -> Option<String> {
+        if let Some(ref env_var) = self.secret_env {
+            if let Ok(val) = std::env::var(env_var) {
+                let trimmed = val.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        if let Some(ref s) = self.secret {
+            let trimmed = s.trim();
+            if let Some(var_name) = trimmed.strip_prefix('$') {
+                if let Ok(val) = std::env::var(var_name) {
+                    let env_trimmed = val.trim();
+                    if !env_trimmed.is_empty() {
+                        return Some(env_trimmed.to_string());
+                    }
+                }
+            }
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        if let Ok(val) = std::env::var("SNOOZE_JWT_SECRET") {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        None
+    }
 }
 
 fn default_leeway_secs() -> u64 {
@@ -152,6 +314,156 @@ pub struct AuthConfig {
     /// Optional JWT verification configuration.
     #[serde(default)]
     pub jwt: Option<JwtConfig>,
+}
+
+impl AuthConfig {
+    /// Populates API keys and JWT configuration from environment variables if not already specified.
+    ///
+    /// Inspects the following environment variables:
+    /// - `SNOOZE_API_KEY`: Single API key string (e.g. `sk-admin123`) or `<role>:<key>`. If no role is specified, defaults to `Admin`.
+    /// - `SNOOZE_API_KEYS`: Comma-separated list of `<role>:<key>` or keys.
+    /// - `SNOOZE_API_KEY_ADMIN` / `SNOOZE_ADMIN_API_KEY`: API key with `Admin` role.
+    /// - `SNOOZE_API_KEY_INFER` / `SNOOZE_API_KEY_INFERENCE`: API key with `Inference` role.
+    /// - `SNOOZE_API_KEY_READONLY` / `SNOOZE_API_KEY_RO`: API key with `ReadOnly` role.
+    /// - `SNOOZE_JWT_SECRET`: Shared HMAC secret for verifying JSON Web Tokens.
+    pub fn load_from_env(&mut self) {
+        // 1. SNOOZE_API_KEY
+        if let Ok(val) = std::env::var("SNOOZE_API_KEY") {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                let (role, key, name) = if let Some((r, k)) = trimmed.split_once(':') {
+                    let parsed_role = Role::parse_str(r);
+                    (
+                        parsed_role,
+                        k.trim(),
+                        format!("env-{}", r.trim().to_lowercase()),
+                    )
+                } else {
+                    (Role::Admin, trimmed, "env-admin".to_string())
+                };
+                if !self
+                    .api_keys
+                    .iter()
+                    .any(|k| k.resolve_key().as_deref() == Some(key))
+                {
+                    self.api_keys.push(ApiKeyConfig {
+                        key: Some(key.to_string()),
+                        key_env: None,
+                        role,
+                        name: Some(name),
+                    });
+                }
+            }
+        }
+
+        // 2. SNOOZE_API_KEYS (comma-separated list of keys, optionally role-prefixed)
+        if let Ok(val) = std::env::var("SNOOZE_API_KEYS") {
+            for entry in val.split(',') {
+                let trimmed = entry.trim();
+                if !trimmed.is_empty() {
+                    let (role, key, name) = if let Some((r, k)) = trimmed.split_once(':') {
+                        let parsed_role = Role::parse_str(r);
+                        (
+                            parsed_role,
+                            k.trim(),
+                            format!("env-{}", r.trim().to_lowercase()),
+                        )
+                    } else {
+                        (Role::Admin, trimmed, "env-admin".to_string())
+                    };
+                    if !self
+                        .api_keys
+                        .iter()
+                        .any(|k| k.resolve_key().as_deref() == Some(key))
+                    {
+                        self.api_keys.push(ApiKeyConfig {
+                            key: Some(key.to_string()),
+                            key_env: None,
+                            role,
+                            name: Some(name),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 3. SNOOZE_API_KEY_ADMIN / SNOOZE_ADMIN_API_KEY
+        if let Ok(val) =
+            std::env::var("SNOOZE_API_KEY_ADMIN").or_else(|_| std::env::var("SNOOZE_ADMIN_API_KEY"))
+        {
+            let trimmed = val.trim();
+            if !trimmed.is_empty()
+                && !self
+                    .api_keys
+                    .iter()
+                    .any(|k| k.resolve_key().as_deref() == Some(trimmed))
+            {
+                self.api_keys.push(ApiKeyConfig {
+                    key: Some(trimmed.to_string()),
+                    key_env: None,
+                    role: Role::Admin,
+                    name: Some("env-admin-role".to_string()),
+                });
+            }
+        }
+
+        // 4. SNOOZE_API_KEY_INFER / SNOOZE_API_KEY_INFERENCE
+        if let Ok(val) = std::env::var("SNOOZE_API_KEY_INFER")
+            .or_else(|_| std::env::var("SNOOZE_API_KEY_INFERENCE"))
+        {
+            let trimmed = val.trim();
+            if !trimmed.is_empty()
+                && !self
+                    .api_keys
+                    .iter()
+                    .any(|k| k.resolve_key().as_deref() == Some(trimmed))
+            {
+                self.api_keys.push(ApiKeyConfig {
+                    key: Some(trimmed.to_string()),
+                    key_env: None,
+                    role: Role::Inference,
+                    name: Some("env-infer-role".to_string()),
+                });
+            }
+        }
+
+        // 5. SNOOZE_API_KEY_READONLY / SNOOZE_API_KEY_RO
+        if let Ok(val) =
+            std::env::var("SNOOZE_API_KEY_READONLY").or_else(|_| std::env::var("SNOOZE_API_KEY_RO"))
+        {
+            let trimmed = val.trim();
+            if !trimmed.is_empty()
+                && !self
+                    .api_keys
+                    .iter()
+                    .any(|k| k.resolve_key().as_deref() == Some(trimmed))
+            {
+                self.api_keys.push(ApiKeyConfig {
+                    key: Some(trimmed.to_string()),
+                    key_env: None,
+                    role: Role::ReadOnly,
+                    name: Some("env-readonly-role".to_string()),
+                });
+            }
+        }
+
+        // 6. SNOOZE_JWT_SECRET
+        if self.jwt.is_none() {
+            if let Ok(val) = std::env::var("SNOOZE_JWT_SECRET") {
+                let trimmed = val.trim();
+                if !trimmed.is_empty() {
+                    self.jwt = Some(JwtConfig {
+                        secret: Some(trimmed.to_string()),
+                        secret_env: Some("SNOOZE_JWT_SECRET".to_string()),
+                        algorithm: JwtAlgorithm::HS256,
+                        issuer: None,
+                        audience: None,
+                        leeway_secs: 60,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Standard and custom claims extracted from a decoded JSON Web Token.
@@ -264,18 +576,36 @@ impl AuthService {
     ///
     /// # Panics
     /// This function does not panic.
-    pub fn new(config: AuthConfig) -> Result<Self, AuthError> {
+    pub fn new(mut config: AuthConfig) -> Result<Self, AuthError> {
+        if config.enabled {
+            config.load_from_env();
+        }
+
         let mut hashed_keys = Vec::with_capacity(config.api_keys.len());
         for key_cfg in config.api_keys {
-            if key_cfg.key.trim().is_empty() {
+            let name = key_cfg.name.as_deref().unwrap_or("api-key").to_string();
+            let resolved_key = key_cfg.resolve_key().ok_or_else(|| {
+                AuthError::Internal(format!(
+                    "API key '{name}' cannot be resolved: key is empty or environment variable is not set"
+                ))
+            })?;
+            if resolved_key.trim().is_empty() {
                 return Err(AuthError::Internal(
                     "Configured API key cannot be empty or whitespace".to_string(),
                 ));
             }
-            let digest = Sha256::digest(key_cfg.key.as_bytes());
+            if key_cfg.key.is_some()
+                && key_cfg.key_env.is_none()
+                && !key_cfg.key.as_deref().unwrap_or("").starts_with('$')
+            {
+                tracing::warn!(
+                    key_name = %name,
+                    "API key is stored in plaintext in the configuration file; consider using environment variables (e.g. SNOOZE_API_KEY or key_env) instead."
+                );
+            }
+            let digest = Sha256::digest(resolved_key.as_bytes());
             let mut hash = [0u8; 32];
             hash.copy_from_slice(&digest);
-            let name = key_cfg.name.unwrap_or_else(|| "api-key".to_string());
             hashed_keys.push(HashedApiKey {
                 hash,
                 role: key_cfg.role,
@@ -284,7 +614,20 @@ impl AuthService {
         }
 
         let jwt_config = if let Some(jwt) = config.jwt {
-            let key = DecodingKey::from_secret(jwt.secret.as_bytes());
+            let secret = jwt.resolve_secret().ok_or_else(|| {
+                AuthError::Internal(
+                    "JWT secret not provided; configure 'secret_env' or set environment variable SNOOZE_JWT_SECRET".to_string(),
+                )
+            })?;
+            if jwt.secret.is_some()
+                && jwt.secret_env.is_none()
+                && !jwt.secret.as_deref().unwrap_or("").starts_with('$')
+            {
+                tracing::warn!(
+                    "JWT secret is stored in plaintext in the configuration file; consider using environment variable SNOOZE_JWT_SECRET or secret_env instead."
+                );
+            }
+            let key = DecodingKey::from_secret(secret.as_bytes());
             let mut validation = Validation::new(jwt.algorithm.into());
             validation.leeway = jwt.leeway_secs;
 
@@ -301,6 +644,12 @@ impl AuthService {
         } else {
             None
         };
+
+        if config.enabled && hashed_keys.is_empty() && jwt_config.is_none() {
+            tracing::warn!(
+                "Authentication is enabled ([auth] enabled = true), but no API keys or JWT secrets were configured. Set SNOOZE_API_KEY or SNOOZE_JWT_SECRET in the environment, or pass --api-key on the CLI."
+            );
+        }
 
         Ok(Self {
             enabled: config.enabled,

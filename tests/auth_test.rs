@@ -153,11 +153,7 @@ async fn test_auth_enabled_public_routes_always_accessible() {
     let auth_config = AuthConfig {
         enabled: true,
         protect_metrics: false,
-        api_keys: vec![ApiKeyConfig {
-            key: "admin-key-123".to_string(),
-            role: Role::Admin,
-            name: Some("test-admin".to_string()),
-        }],
+        api_keys: vec![ApiKeyConfig::new("admin-key-123", Role::Admin).with_name("test-admin")],
         jwt: None,
     };
     let auth_svc = Arc::new(AuthService::new(auth_config).unwrap());
@@ -218,11 +214,7 @@ async fn test_auth_enabled_missing_credentials_returns_401() {
     let auth_config = AuthConfig {
         enabled: true,
         protect_metrics: false,
-        api_keys: vec![ApiKeyConfig {
-            key: "secret-key".to_string(),
-            role: Role::Inference,
-            name: Some("client".to_string()),
-        }],
+        api_keys: vec![ApiKeyConfig::new("secret-key", Role::Inference).with_name("client")],
         jwt: None,
     };
     let auth_svc = Arc::new(AuthService::new(auth_config).unwrap());
@@ -263,21 +255,9 @@ async fn test_api_key_role_matrix() {
         enabled: true,
         protect_metrics: false,
         api_keys: vec![
-            ApiKeyConfig {
-                key: "admin-key".to_string(),
-                role: Role::Admin,
-                name: Some("admin-user".to_string()),
-            },
-            ApiKeyConfig {
-                key: "infer-key".to_string(),
-                role: Role::Inference,
-                name: Some("infer-user".to_string()),
-            },
-            ApiKeyConfig {
-                key: "readonly-key".to_string(),
-                role: Role::ReadOnly,
-                name: Some("ro-user".to_string()),
-            },
+            ApiKeyConfig::new("admin-key", Role::Admin).with_name("admin-user"),
+            ApiKeyConfig::new("infer-key", Role::Inference).with_name("infer-user"),
+            ApiKeyConfig::new("readonly-key", Role::ReadOnly).with_name("ro-user"),
         ],
         jwt: None,
     };
@@ -410,11 +390,9 @@ async fn test_api_key_in_authorization_bearer_header() {
     let auth_config = AuthConfig {
         enabled: true,
         protect_metrics: false,
-        api_keys: vec![ApiKeyConfig {
-            key: "sk-my-client-key-456".to_string(),
-            role: Role::Inference,
-            name: Some("sdk-client".to_string()),
-        }],
+        api_keys: vec![
+            ApiKeyConfig::new("sk-my-client-key-456", Role::Inference).with_name("sdk-client")
+        ],
         jwt: None,
     };
     let auth_svc = Arc::new(AuthService::new(auth_config).unwrap());
@@ -439,11 +417,7 @@ async fn test_api_key_invalid_returns_401() {
     let auth_config = AuthConfig {
         enabled: true,
         protect_metrics: false,
-        api_keys: vec![ApiKeyConfig {
-            key: "good-key".to_string(),
-            role: Role::Admin,
-            name: None,
-        }],
+        api_keys: vec![ApiKeyConfig::new("good-key", Role::Admin)],
         jwt: None,
     };
     let auth_svc = Arc::new(AuthService::new(auth_config).unwrap());
@@ -471,7 +445,8 @@ async fn test_jwt_roles_and_lifecycle() {
         protect_metrics: false,
         api_keys: Vec::new(),
         jwt: Some(JwtConfig {
-            secret: TEST_JWT_SECRET.to_string(),
+            secret: Some(TEST_JWT_SECRET.to_string()),
+            secret_env: None,
             algorithm: JwtAlgorithm::HS256,
             issuer: Some("snoozeml-test".to_string()),
             audience: Some("snoozeml-clients".to_string()),
@@ -578,16 +553,8 @@ async fn test_protect_metrics_flag() {
         enabled: true,
         protect_metrics: true,
         api_keys: vec![
-            ApiKeyConfig {
-                key: "admin-key".to_string(),
-                role: Role::Admin,
-                name: Some("admin".to_string()),
-            },
-            ApiKeyConfig {
-                key: "infer-key".to_string(),
-                role: Role::Inference,
-                name: Some("infer".to_string()),
-            },
+            ApiKeyConfig::new("admin-key", Role::Admin).with_name("admin"),
+            ApiKeyConfig::new("infer-key", Role::Inference).with_name("infer"),
         ],
         jwt: None,
     };
@@ -645,18 +612,10 @@ async fn test_dual_mode_concurrent_auth() {
     let auth_config = AuthConfig {
         enabled: true,
         protect_metrics: false,
-        api_keys: vec![ApiKeyConfig {
-            key: "static-key-admin".to_string(),
-            role: Role::Admin,
-            name: Some("api-key-caller".to_string()),
-        }],
-        jwt: Some(JwtConfig {
-            secret: TEST_JWT_SECRET.to_string(),
-            algorithm: JwtAlgorithm::HS256,
-            issuer: None,
-            audience: None,
-            leeway_secs: 60,
-        }),
+        api_keys: vec![
+            ApiKeyConfig::new("static-key-admin", Role::Admin).with_name("api-key-caller")
+        ],
+        jwt: Some(JwtConfig::new(TEST_JWT_SECRET)),
     };
     let auth_svc = Arc::new(AuthService::new(auth_config).unwrap());
     let app = create_router(AppState::new(registry, metrics).with_auth(auth_svc));
@@ -685,11 +644,7 @@ fn test_auth_config_rejects_empty_api_key() {
     let config_empty = AuthConfig {
         enabled: true,
         protect_metrics: false,
-        api_keys: vec![ApiKeyConfig {
-            key: "".to_string(),
-            role: Role::Inference,
-            name: Some("empty".to_string()),
-        }],
+        api_keys: vec![ApiKeyConfig::new("", Role::Inference).with_name("empty")],
         jwt: None,
     };
     let err_empty = AuthService::new(config_empty).unwrap_err();
@@ -699,11 +654,7 @@ fn test_auth_config_rejects_empty_api_key() {
     let config_whitespace = AuthConfig {
         enabled: true,
         protect_metrics: false,
-        api_keys: vec![ApiKeyConfig {
-            key: "   ".to_string(),
-            role: Role::Inference,
-            name: Some("whitespace".to_string()),
-        }],
+        api_keys: vec![ApiKeyConfig::new("   ", Role::Inference).with_name("whitespace")],
         jwt: None,
     };
     let err_ws = AuthService::new(config_whitespace).unwrap_err();
@@ -721,13 +672,7 @@ async fn test_jwt_rejects_alg_none_and_mismatched_algorithms() {
         enabled: true,
         protect_metrics: false,
         api_keys: vec![],
-        jwt: Some(JwtConfig {
-            secret: TEST_JWT_SECRET.to_string(),
-            algorithm: JwtAlgorithm::HS256,
-            issuer: None,
-            audience: None,
-            leeway_secs: 60,
-        }),
+        jwt: Some(JwtConfig::new(TEST_JWT_SECRET)),
     };
     let auth_svc = Arc::new(AuthService::new(auth_config).unwrap());
     let app = create_router(AppState::new(registry, metrics).with_auth(auth_svc));
@@ -780,4 +725,234 @@ async fn test_jwt_rejects_alg_none_and_mismatched_algorithms() {
         StatusCode::UNAUTHORIZED,
         "Tokens with mismatched algorithm must be rejected"
     );
+}
+
+static AUTH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct EnvGuard {
+    vars: Vec<&'static str>,
+}
+
+impl EnvGuard {
+    fn set(vars: &[(&'static str, &str)]) -> Self {
+        let mut names = Vec::new();
+        for (k, v) in vars {
+            std::env::set_var(k, v);
+            names.push(*k);
+        }
+        Self { vars: names }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for v in &self.vars {
+            std::env::remove_var(v);
+        }
+    }
+}
+
+#[test]
+fn test_auth_config_from_env_single_key_defaults_to_admin() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[("SNOOZE_API_KEY", "sk-env-admin-999")]);
+
+    let config = AuthConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let auth = AuthService::new(config).unwrap();
+    let identity = auth.authenticate_api_key("sk-env-admin-999").unwrap();
+    assert_eq!(identity.role, Role::Admin);
+    assert_eq!(identity.subject, "env-admin");
+}
+
+#[test]
+fn test_auth_config_from_env_role_prefixed() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[("SNOOZE_API_KEY", "infer:sk-env-infer-888")]);
+
+    let config = AuthConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let auth = AuthService::new(config).unwrap();
+    let identity = auth.authenticate_api_key("sk-env-infer-888").unwrap();
+    assert_eq!(identity.role, Role::Inference);
+}
+
+#[test]
+fn test_auth_config_from_env_multiple_keys() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[(
+        "SNOOZE_API_KEYS",
+        "admin:sk-multi-adm,infer:sk-multi-inf,read_only:sk-multi-ro",
+    )]);
+
+    let config = AuthConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let auth = AuthService::new(config).unwrap();
+    assert_eq!(
+        auth.authenticate_api_key("sk-multi-adm").unwrap().role,
+        Role::Admin
+    );
+    assert_eq!(
+        auth.authenticate_api_key("sk-multi-inf").unwrap().role,
+        Role::Inference
+    );
+    assert_eq!(
+        auth.authenticate_api_key("sk-multi-ro").unwrap().role,
+        Role::ReadOnly
+    );
+}
+
+#[test]
+fn test_auth_config_from_env_role_specific() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[
+        ("SNOOZE_API_KEY_ADMIN", "sk-admin-direct"),
+        ("SNOOZE_API_KEY_INFER", "sk-infer-direct"),
+        ("SNOOZE_API_KEY_READONLY", "sk-ro-direct"),
+    ]);
+
+    let config = AuthConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let auth = AuthService::new(config).unwrap();
+    assert_eq!(
+        auth.authenticate_api_key("sk-admin-direct").unwrap().role,
+        Role::Admin
+    );
+    assert_eq!(
+        auth.authenticate_api_key("sk-infer-direct").unwrap().role,
+        Role::Inference
+    );
+    assert_eq!(
+        auth.authenticate_api_key("sk-ro-direct").unwrap().role,
+        Role::ReadOnly
+    );
+}
+
+#[test]
+fn test_api_key_config_key_env() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[("MY_CUSTOM_SECRET_KEY", "sk-custom-secret-key-456")]);
+
+    let key_cfg =
+        ApiKeyConfig::from_env("MY_CUSTOM_SECRET_KEY", Role::Inference).with_name("custom-app");
+    assert_eq!(
+        key_cfg.resolve_key().as_deref(),
+        Some("sk-custom-secret-key-456")
+    );
+
+    let config = AuthConfig {
+        enabled: true,
+        protect_metrics: false,
+        api_keys: vec![key_cfg],
+        jwt: None,
+    };
+    let auth = AuthService::new(config).unwrap();
+    let identity = auth
+        .authenticate_api_key("sk-custom-secret-key-456")
+        .unwrap();
+    assert_eq!(identity.role, Role::Inference);
+    assert_eq!(identity.subject, "custom-app");
+}
+
+#[test]
+fn test_api_key_config_dollar_expansion() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[("EXPANDED_SECRET_VAR", "sk-expanded-val-789")]);
+
+    let key_cfg =
+        ApiKeyConfig::new("$EXPANDED_SECRET_VAR", Role::Admin).with_name("expanded-admin");
+    assert_eq!(
+        key_cfg.resolve_key().as_deref(),
+        Some("sk-expanded-val-789")
+    );
+
+    let config = AuthConfig {
+        enabled: true,
+        protect_metrics: false,
+        api_keys: vec![key_cfg],
+        jwt: None,
+    };
+    let auth = AuthService::new(config).unwrap();
+    assert_eq!(
+        auth.authenticate_api_key("sk-expanded-val-789")
+            .unwrap()
+            .role,
+        Role::Admin
+    );
+}
+
+#[test]
+fn test_jwt_config_from_env() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[("SNOOZE_JWT_SECRET", TEST_JWT_SECRET)]);
+
+    let config = AuthConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let auth = AuthService::new(config).unwrap();
+    let token = create_jwt_token("env-jwt-user", Some(Role::Inference), None, 3600);
+    let identity = auth.authenticate_jwt(&token).unwrap();
+    assert_eq!(identity.subject, "env-jwt-user");
+    assert_eq!(identity.role, Role::Inference);
+}
+
+#[test]
+fn test_jwt_config_secret_env() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[("CUSTOM_JWT_SECRET_VAR", TEST_JWT_SECRET)]);
+
+    let jwt_cfg = JwtConfig::from_env("CUSTOM_JWT_SECRET_VAR");
+    assert_eq!(jwt_cfg.resolve_secret().as_deref(), Some(TEST_JWT_SECRET));
+
+    let config = AuthConfig {
+        enabled: true,
+        protect_metrics: false,
+        api_keys: vec![],
+        jwt: Some(jwt_cfg),
+    };
+    let auth = AuthService::new(config).unwrap();
+    let token = create_jwt_token("custom-jwt-user", Some(Role::Admin), None, 3600);
+    let identity = auth.authenticate_jwt(&token).unwrap();
+    assert_eq!(identity.subject, "custom-jwt-user");
+    assert_eq!(identity.role, Role::Admin);
+}
+
+#[tokio::test]
+async fn test_models_toml_only_enabled_true_with_env_key() {
+    let _lock = AUTH_ENV_LOCK.lock().unwrap();
+    let _guard = EnvGuard::set(&[("SNOOZE_API_KEY", "sk-pure-env-key-123")]);
+
+    let toml_content = r#"
+[auth]
+enabled = true
+protect_metrics = true
+"#;
+    let mut config = snooze_ml::config::ModelDirectoryConfig::parse_content(
+        toml_content,
+        std::path::Path::new("models.toml"),
+    )
+    .unwrap();
+
+    let mut auth_cfg = config.auth.take().unwrap();
+    auth_cfg.load_from_env();
+    assert_eq!(auth_cfg.api_keys.len(), 1);
+    assert_eq!(
+        auth_cfg.api_keys[0].resolve_key().as_deref(),
+        Some("sk-pure-env-key-123")
+    );
+
+    let auth_svc = AuthService::new(auth_cfg).unwrap();
+    let identity = auth_svc
+        .authenticate_api_key("sk-pure-env-key-123")
+        .unwrap();
+    assert_eq!(identity.role, Role::Admin);
 }

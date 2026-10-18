@@ -92,28 +92,34 @@ idle_timeout_secs = 180
 enabled = true
 protect_metrics = false # Set true to require Admin role on /metrics
 
+# Optional: JWT verification settings (secrets loaded securely from env var)
 [auth.jwt]
-secret = "your-secure-jwt-hmac-shared-secret-at-least-32-chars"
-algorithm = "HS256"      # HS256, HS384, or HS512
-issuer = "snoozeml-auth" # Optional: validate "iss" claim
-audience = "snoozeml"    # Optional: validate "aud" claim
-leeway_secs = 60         # Clock drift allowance in seconds
+secret_env = "SNOOZE_JWT_SECRET" # Environment variable containing HMAC secret
+algorithm = "HS256"              # HS256, HS384, or HS512
+issuer = "snoozeml-auth"         # Optional: validate "iss" claim
+audience = "snoozeml"            # Optional: validate "aud" claim
+leeway_secs = 60                 # Clock drift allowance in seconds
 
+# Optional: Declare named keys mapped to environment variables (no plaintext keys):
 [[auth.api_keys]]
-key = "sk-admin-secret-987"
+key_env = "SNOOZE_API_KEY_ADMIN"
 role = "admin"
 name = "cluster-admin"
 
 [[auth.api_keys]]
-key = "sk-infer-client-654"
+key_env = "SNOOZE_API_KEY_INFER"
 role = "inference"
 name = "web-inference-worker"
 
 [[auth.api_keys]]
-key = "sk-ro-monitor-321"
+key_env = "SNOOZE_API_KEY_READONLY"
 role = "read_only"
 name = "dashboard-crawler"
 ```
+
+> [!TIP]
+> You do **not** need to declare `[[auth.api_keys]]` tables if you prefer simple environment variables. Setting `[auth] enabled = true` causes SnoozeML to automatically load credentials from `SNOOZE_API_KEY` (defaults to Admin, or `<role>:<key>`), `SNOOZE_API_KEYS`, and `SNOOZE_JWT_SECRET`.
+
 
 ---
 

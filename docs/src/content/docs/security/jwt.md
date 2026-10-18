@@ -9,16 +9,29 @@ For multi-tenant environments, OAuth2 / OIDC integrations, and browser-facing mi
 
 ## 1. Configuring the JWT Verifier
 
-Configure the JWT settings in `models.toml` or via CLI/environment flags:
+Configure the JWT settings in `models.toml` or via environment variables:
 
-### In `models.toml`
+> [!IMPORTANT]
+> **Avoid storing plaintext secrets in `models.toml`**. Storing secret keys in version-controlled configuration files poses security risks. SnoozeML supports resolving the HMAC secret dynamically from environment variables.
+
+### Option A: Via Environment Variable (Recommended)
+Simply set `[auth] enabled = true` in `models.toml`, and export `SNOOZE_JWT_SECRET`:
+
+```bash
+export SNOOZE_JWT_SECRET="your-cryptographically-secure-shared-secret-key-32-chars-long"
+snooze serve --models-dir ./models
+```
+
+### Option B: Referencing Environment Variables in `models.toml`
+When you need to configure claims validation (`issuer`, `audience`) or custom algorithms alongside environment-injected secrets:
+
 ```toml
 [auth]
 enabled = true
 
 [auth.jwt]
-# HMAC shared secret (minimum 32 characters recommended)
-secret = "your-cryptographically-secure-shared-secret-key-32-chars-long"
+# Dynamically resolve HMAC secret from environment variable (recommended)
+secret_env = "SNOOZE_JWT_SECRET"
 
 # Supported algorithms: "HS256" (default), "HS384", "HS512"
 algorithm = "HS256"
@@ -33,11 +46,9 @@ audience = "snoozeml"
 leeway_secs = 60
 ```
 
-### Via CLI & Environment
-```bash
-export SNOOZE_JWT_SECRET="your-cryptographically-secure-shared-secret-key-32-chars-long"
-snooze serve --models-dir ./models
-```
+> [!TIP]
+> You can also use `$VAR` expansion: `secret = "$SNOOZE_JWT_SECRET"`. Hardcoding raw plaintext secrets directly into `secret = "..."` is supported for backward compatibility but triggers a security warning on startup.
+
 
 ---
 

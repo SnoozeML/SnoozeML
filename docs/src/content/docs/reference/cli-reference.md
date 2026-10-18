@@ -47,7 +47,7 @@ snooze serve [OPTIONS]
 | `--max-loaded-models <N>`| — | *None* | — | Maximum concurrent loaded model instances in memory. |
 | `--demo` | — | `false` | — | Enables the built-in mock testing model `demo-model`. |
 | `--auth-enabled` | — | `false` | — | Explicitly enables authentication enforcement. |
-| `--api-key <ROLE:KEY>` | — | *None* | — | Adds an API key with role (`admin`, `infer`, `ro`). Repeatable. |
+| `--api-key <ROLE:KEY>` | — | *None* | `SNOOZE_API_KEY` | Adds an API key with role (`admin`, `infer`, `ro`). Omitting role defaults to `admin`. Repeatable. |
 | `--jwt-secret <SECRET>` | — | *None* | `SNOOZE_JWT_SECRET` | HMAC secret key used to validate JSON Web Tokens. |
 | `--protect-metrics` | — | `false` | — | Requires `Admin` role to query the `/metrics` endpoint. |
 

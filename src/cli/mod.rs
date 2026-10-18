@@ -415,24 +415,27 @@ pub async fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 effective_auth.protect_metrics = true;
             }
             for entry in api_keys {
-                if let Some((role_str, key_str)) = entry.split_once(':') {
-                    let role = match role_str.to_lowercase().as_str() {
-                        "admin" | "administrator" => Role::Admin,
-                        "infer" | "inference" | "user" => Role::Inference,
-                        "read" | "readonly" => Role::ReadOnly,
-                        _ => Role::Inference,
-                    };
+                let (role, key_str, name) = if let Some((role_str, key_str)) = entry.split_once(':')
+                {
+                    let role = Role::parse_str(role_str);
+                    (role, key_str.trim(), format!("cli-{role_str}"))
+                } else {
+                    (Role::Admin, entry.trim(), "cli-admin".to_string())
+                };
+                if !key_str.is_empty() {
                     effective_auth.api_keys.push(ApiKeyConfig {
-                        key: key_str.to_string(),
+                        key: Some(key_str.to_string()),
+                        key_env: None,
                         role,
-                        name: Some(format!("cli-{role_str}")),
+                        name: Some(name),
                     });
                     effective_auth.enabled = true;
                 }
             }
             if let Some(secret) = jwt_secret {
                 effective_auth.jwt = Some(JwtConfig {
-                    secret,
+                    secret: Some(secret),
+                    secret_env: Some("SNOOZE_JWT_SECRET".to_string()),
                     algorithm: JwtAlgorithm::HS256,
                     issuer: None,
                     audience: None,
@@ -440,6 +443,9 @@ pub async fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 });
                 effective_auth.enabled = true;
             }
+
+            // Also load any environment-based API keys or JWT secrets
+            effective_auth.load_from_env();
 
             let auth_config = if effective_auth.enabled
                 || !effective_auth.api_keys.is_empty()
@@ -674,13 +680,26 @@ pub async fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+macro_rules! with_env_api_key {
+    ($req:expr) => {{
+        let mut r = $req;
+        if let Ok(key) = std::env::var("SNOOZE_API_KEY") {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                r = r.header("x-api-key", trimmed);
+            }
+        }
+        r
+    }};
+}
+
 /// Fetches list of registered models from the SnoozeML daemon.
 ///
 /// # Errors
 /// Returns error message string if connection or JSON decoding fails.
 pub(crate) fn fetch_models(endpoint: &str) -> Result<Vec<crate::types::ModelMetadata>, String> {
     let url = format!("{}/v1/models", endpoint.trim_end_matches('/'));
-    let mut resp = ureq::get(&url)
+    let mut resp = with_env_api_key!(ureq::get(&url))
         .call()
         .map_err(|e| format!("Failed to connect to {url}: {e}"))?;
     let models: Vec<crate::types::ModelMetadata> = resp
@@ -696,7 +715,7 @@ pub(crate) fn fetch_models(endpoint: &str) -> Result<Vec<crate::types::ModelMeta
 /// Returns error message string if connection or reading fails.
 pub(crate) fn fetch_metrics(endpoint: &str) -> Result<String, String> {
     let url = format!("{}/metrics", endpoint.trim_end_matches('/'));
-    let mut resp = ureq::get(&url)
+    let mut resp = with_env_api_key!(ureq::get(&url))
         .call()
         .map_err(|e| format!("Failed to connect to {url}: {e}"))?;
     let metrics = resp
@@ -765,7 +784,7 @@ async fn run_load(endpoint: &str, model_id: &str) -> Result<(), Box<dyn std::err
     let mid = model_id.to_string();
     let res = tokio::task::spawn_blocking(move || {
         let url = format!("{}/v1/models/{mid}/load", ep.trim_end_matches('/'));
-        match ureq::post(&url).send_empty() {
+        match with_env_api_key!(ureq::post(&url)).send_empty() {
             Ok(_) => {
                 println!("Successfully loaded model '{mid}' into memory at {ep}.");
                 Ok(())
@@ -794,7 +813,7 @@ async fn run_unload(endpoint: &str, model_id: &str) -> Result<(), Box<dyn std::e
     let mid = model_id.to_string();
     let res = tokio::task::spawn_blocking(move || {
         let url = format!("{}/v1/models/{mid}/unload", ep.trim_end_matches('/'));
-        match ureq::post(&url).send_empty() {
+        match with_env_api_key!(ureq::post(&url)).send_empty() {
             Ok(_) => {
                 println!("Successfully unloaded model '{mid}' from memory at {ep}.");
                 Ok(())
@@ -823,7 +842,7 @@ async fn run_pin(endpoint: &str, model_id: &str) -> Result<(), Box<dyn std::erro
     let mid = model_id.to_string();
     let res = tokio::task::spawn_blocking(move || {
         let url = format!("{}/v1/models/{mid}/pin", ep.trim_end_matches('/'));
-        match ureq::post(&url).send_empty() {
+        match with_env_api_key!(ureq::post(&url)).send_empty() {
             Ok(_) => {
                 println!("Successfully pinned model '{mid}' in memory at {ep}.");
                 Ok(())
@@ -852,7 +871,7 @@ async fn run_unpin(endpoint: &str, model_id: &str) -> Result<(), Box<dyn std::er
     let mid = model_id.to_string();
     let res = tokio::task::spawn_blocking(move || {
         let url = format!("{}/v1/models/{mid}/unpin", ep.trim_end_matches('/'));
-        match ureq::post(&url).send_empty() {
+        match with_env_api_key!(ureq::post(&url)).send_empty() {
             Ok(_) => {
                 println!("Successfully unpinned model '{mid}' at {ep}.");
                 Ok(())

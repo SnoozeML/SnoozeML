@@ -11,8 +11,37 @@ Static API keys are the simplest and most common method for authenticating micro
 
 API keys are mapped directly to one of the three RBAC roles: `admin`, `inference` (or `infer`), or `read_only` (or `ro`).
 
-### Option A: In `models.toml`
-Add one or more `[[auth.api_keys]]` blocks:
+> [!IMPORTANT]
+> **Do not store plaintext secrets in `models.toml`**. Storing credentials in version-controlled files risks credential leakage. SnoozeML encourages enabling authentication with `[auth] enabled = true` and resolving keys dynamically from environment variables.
+
+### Option A: Via Environment Variables (Recommended)
+Simply enable authentication in `models.toml`:
+
+```toml
+[auth]
+enabled = true
+```
+
+Then provide your keys through environment variables:
+
+```bash
+# 1. Single API key (defaults to Admin role):
+export SNOOZE_API_KEY="sk-admin-production-key-987"
+
+# Or with an explicit role prefix (<role>:<key>):
+export SNOOZE_API_KEY="inference:sk-inference-web-app-654"
+
+# 2. Multiple API keys with roles via comma-separated list:
+export SNOOZE_API_KEYS="admin:sk-admin-987,inference:sk-infer-654,ro:sk-monitor-321"
+
+# 3. Role-specific environment variables:
+export SNOOZE_API_KEY_ADMIN="sk-admin-production-key-987"
+export SNOOZE_API_KEY_INFER="sk-inference-web-app-654"
+export SNOOZE_API_KEY_READONLY="sk-readonly-monitor-321"
+```
+
+### Option B: Referencing Environment Variables in `models.toml`
+If you need to assign explicit descriptive names to keys in `models.toml`, use `key_env` to reference environment variable names, or prefix with `$` to expand variables:
 
 ```toml
 [auth]
@@ -20,25 +49,25 @@ enabled = true
 
 # Cluster administrator key (full access)
 [[auth.api_keys]]
-key = "sk-admin-production-key-987"
-role = "admin"
 name = "cluster-admin"
+key_env = "SNOOZE_API_KEY_ADMIN"
+role = "admin"
 
 # Web backend key (can query inference and view models)
 [[auth.api_keys]]
-key = "sk-inference-web-app-654"
-role = "inference"
 name = "web-client"
+key_env = "SNOOZE_API_KEY_INFER"
+role = "inference"
 
 # Monitoring crawler key (can only list models)
 [[auth.api_keys]]
-key = "sk-readonly-monitor-321"
-role = "read_only"
 name = "datadog-crawler"
+key = "$SNOOZE_API_KEY_READONLY"
+role = "read_only"
 ```
 
-### Option B: Via CLI Flags on `snooze serve`
-You can provide repeatable `--api-key` arguments using the format `<role>:<key>`:
+### Option C: Via CLI Flags on `snooze serve`
+You can provide repeatable `--api-key` arguments using the format `<role>:<key>` (or just `<key>`, which defaults to `admin`):
 
 ```bash
 snooze serve \
@@ -48,9 +77,9 @@ snooze serve \
   --api-key ro:sk-readonly-monitor-321
 ```
 
-:::tip
-Both `infer` and `inference` are accepted for the Inference role. Both `ro` and `read_only` are accepted for the ReadOnly role.
-:::
+> [!TIP]
+> Both `infer` and `inference` are accepted for the Inference role. Both `ro` and `read_only` are accepted for the ReadOnly role. Omitting the role prefix defaults to `admin`.
+
 
 ---
 

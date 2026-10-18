@@ -238,13 +238,21 @@ max_batch_delay_ms = 5
 
 [auth]
 enabled = true
-protect_metrics = true
+protect_metrics = true # Optional: require Admin role on /metrics
 
+# Securely map keys to environment variable names (no plaintext secrets in config):
 [[auth.api_keys]]
 name = "production-client"
-key = "sk-prod-replace-with-secret"
+key_env = "PROD_CLIENT_API_KEY"
 role = "inference" # "readonly" | "inference" | "admin"
 ```
+
+> [!TIP]
+> Credentials should **never** be stored in plaintext inside `models.toml`. Instead, pass `[auth] enabled = true` in `models.toml` and supply your credentials via environment variables:
+> - `SNOOZE_API_KEY`: Single API key (defaults to `Admin` role, or `<role>:<key>`).
+> - `SNOOZE_API_KEYS`: Comma-separated list of keys (e.g. `admin:sk-admin-key,inference:sk-client-key`).
+> - `SNOOZE_API_KEY_ADMIN`, `SNOOZE_API_KEY_INFER`, `SNOOZE_API_KEY_READONLY`: Role-specific keys.
+> - `SNOOZE_JWT_SECRET`: Shared HMAC secret for verifying JSON Web Tokens.
 
 ---
 

@@ -4,7 +4,7 @@
 //! files (`.onnx`, `.safetensors`) and multi-file directory structures (e.g. Hugging Face
 //! downloads), as well as sample configuration and stub generation utilities.
 
-use crate::auth::AuthConfig;
+use crate::auth::{ApiKeyConfig, AuthConfig, JwtAlgorithm, JwtConfig, Role};
 use crate::model::ModelConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -587,7 +587,10 @@ impl ModelDirectoryConfig {
         let mut config = Self::default();
         let mut current_model: Option<ModelEntryConfig> = None;
         let mut current_stream: Option<StreamBindingConfig> = None;
+        let mut current_api_key: Option<ApiKeyConfig> = None;
         let mut in_defaults = false;
+        let mut in_auth = false;
+        let mut in_auth_jwt = false;
 
         for (idx, line) in content.lines().enumerate() {
             let line_num = idx.saturating_add(1);
@@ -604,8 +607,14 @@ impl ModelDirectoryConfig {
                 if let Some(prev) = current_stream.take() {
                     config.streams.push(prev);
                 }
+                if let Some(prev) = current_api_key.take() {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    auth.api_keys.push(prev);
+                }
                 current_model = Some(ModelEntryConfig::default());
                 in_defaults = false;
+                in_auth = false;
+                in_auth_jwt = false;
                 continue;
             }
 
@@ -616,8 +625,14 @@ impl ModelDirectoryConfig {
                 if let Some(prev) = current_stream.take() {
                     config.streams.push(prev);
                 }
+                if let Some(prev) = current_api_key.take() {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    auth.api_keys.push(prev);
+                }
                 current_stream = Some(StreamBindingConfig::default());
                 in_defaults = false;
+                in_auth = false;
+                in_auth_jwt = false;
                 continue;
             }
 
@@ -628,7 +643,77 @@ impl ModelDirectoryConfig {
                 if let Some(prev) = current_stream.take() {
                     config.streams.push(prev);
                 }
+                if let Some(prev) = current_api_key.take() {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    auth.api_keys.push(prev);
+                }
                 in_defaults = true;
+                in_auth = false;
+                in_auth_jwt = false;
+                continue;
+            }
+
+            if trimmed == "[auth]" {
+                if let Some(prev) = current_model.take() {
+                    config.models.push(prev);
+                }
+                if let Some(prev) = current_stream.take() {
+                    config.streams.push(prev);
+                }
+                if let Some(prev) = current_api_key.take() {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    auth.api_keys.push(prev);
+                }
+                config.auth.get_or_insert_with(AuthConfig::default);
+                in_defaults = false;
+                in_auth = true;
+                in_auth_jwt = false;
+                continue;
+            }
+
+            if trimmed == "[auth.jwt]" || trimmed == "[jwt]" {
+                if let Some(prev) = current_model.take() {
+                    config.models.push(prev);
+                }
+                if let Some(prev) = current_stream.take() {
+                    config.streams.push(prev);
+                }
+                if let Some(prev) = current_api_key.take() {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    auth.api_keys.push(prev);
+                }
+                let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                auth.jwt.get_or_insert_with(JwtConfig::default);
+                in_defaults = false;
+                in_auth = false;
+                in_auth_jwt = true;
+                continue;
+            }
+
+            if trimmed == "[[auth.api_keys]]"
+                || trimmed == "[[auth.api_key]]"
+                || trimmed == "[[api_keys]]"
+            {
+                if let Some(prev) = current_model.take() {
+                    config.models.push(prev);
+                }
+                if let Some(prev) = current_stream.take() {
+                    config.streams.push(prev);
+                }
+                if let Some(prev) = current_api_key.take() {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    auth.api_keys.push(prev);
+                }
+                config.auth.get_or_insert_with(AuthConfig::default);
+                current_api_key = Some(ApiKeyConfig {
+                    key: None,
+                    key_env: None,
+                    role: Role::Inference,
+                    name: None,
+                });
+                in_defaults = false;
+                in_auth = false;
+                in_auth_jwt = false;
                 continue;
             }
 
@@ -638,6 +723,10 @@ impl ModelDirectoryConfig {
                 }
                 if let Some(prev) = current_stream.take() {
                     config.streams.push(prev);
+                }
+                if let Some(prev) = current_api_key.take() {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    auth.api_keys.push(prev);
                 }
                 let id = trimmed
                     .trim_start_matches("[models.")
@@ -652,6 +741,8 @@ impl ModelDirectoryConfig {
                 };
                 current_model = Some(new_entry);
                 in_defaults = false;
+                in_auth = false;
+                in_auth_jwt = false;
                 continue;
             }
 
@@ -661,6 +752,10 @@ impl ModelDirectoryConfig {
                 }
                 if let Some(prev) = current_stream.take() {
                     config.streams.push(prev);
+                }
+                if let Some(prev) = current_api_key.take() {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    auth.api_keys.push(prev);
                 }
                 let name = trimmed
                     .trim_start_matches("[streams.")
@@ -675,6 +770,8 @@ impl ModelDirectoryConfig {
                 };
                 current_stream = Some(new_entry);
                 in_defaults = false;
+                in_auth = false;
+                in_auth_jwt = false;
                 continue;
             }
 
@@ -823,6 +920,55 @@ impl ModelDirectoryConfig {
                             tracing::debug!(line = line_num, key = %other, "Unrecognized key in stream entry");
                         }
                     }
+                } else if in_auth {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    match key.as_str() {
+                        "enabled" | "auth_enabled" => {
+                            if let Some(b) = Self::parse_bool_str(&val) {
+                                auth.enabled = b;
+                            }
+                        }
+                        "protect_metrics" => {
+                            if let Some(b) = Self::parse_bool_str(&val) {
+                                auth.protect_metrics = b;
+                            }
+                        }
+                        other => {
+                            tracing::debug!(line = line_num, key = %other, "Unrecognized key in [auth]");
+                        }
+                    }
+                } else if in_auth_jwt {
+                    let auth = config.auth.get_or_insert_with(AuthConfig::default);
+                    let jwt = auth.jwt.get_or_insert_with(JwtConfig::default);
+                    match key.as_str() {
+                        "secret" => jwt.secret = Some(val),
+                        "secret_env" => jwt.secret_env = Some(val),
+                        "algorithm" | "alg" => match val.to_uppercase().as_str() {
+                            "HS384" => jwt.algorithm = JwtAlgorithm::HS384,
+                            "HS512" => jwt.algorithm = JwtAlgorithm::HS512,
+                            _ => jwt.algorithm = JwtAlgorithm::HS256,
+                        },
+                        "issuer" | "iss" => jwt.issuer = Some(val),
+                        "audience" | "aud" => jwt.audience = Some(val),
+                        "leeway_secs" | "leeway" => {
+                            if let Ok(v) = val.parse::<u64>() {
+                                jwt.leeway_secs = v;
+                            }
+                        }
+                        other => {
+                            tracing::debug!(line = line_num, key = %other, "Unrecognized key in [auth.jwt]");
+                        }
+                    }
+                } else if let Some(ref mut key_cfg) = current_api_key {
+                    match key.as_str() {
+                        "key" => key_cfg.key = Some(val),
+                        "key_env" => key_cfg.key_env = Some(val),
+                        "role" => key_cfg.role = Role::parse_str(&val),
+                        "name" => key_cfg.name = Some(val),
+                        other => {
+                            tracing::debug!(line = line_num, key = %other, "Unrecognized key in [[auth.api_keys]]");
+                        }
+                    }
                 } else {
                     tracing::debug!(line = line_num, "Key-value pair outside section; ignoring");
                 }
@@ -834,6 +980,10 @@ impl ModelDirectoryConfig {
         }
         if let Some(prev) = current_stream {
             config.streams.push(prev);
+        }
+        if let Some(prev) = current_api_key {
+            let auth = config.auth.get_or_insert_with(AuthConfig::default);
+            auth.api_keys.push(prev);
         }
 
         Ok(config)
