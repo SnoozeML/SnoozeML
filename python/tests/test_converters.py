@@ -18,8 +18,7 @@ from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-import xgboost as xgb
+xgb = pytest.importorskip("xgboost")
 
 from snoozeml.converters import export_sklearn, export_torch, export_xgboost
 from snoozeml.exceptions import ConversionError

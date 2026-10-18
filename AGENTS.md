@@ -6,13 +6,16 @@ This document provides cross-vendor context and engineering rules for AI coding 
 
 ## 1. Project Overview
 
-**SnoozeML** (`snooze-ml`, binary name `snooze`) is a single-binary, bare-metal deep learning and machine learning inference daemon written in Rust. It combines:
+**SnoozeML** (`snooze-ml`, binary name `snooze`) is a single-binary, bare-metal deep learning and machine learning inference daemon written in Rust with an accompanying Python ecosystem. It combines:
 1. **Adaptive Dynamic Micro-Batching** along `Axis(0)` (`src/batcher.rs`) to coalesce concurrent requests within a configurable batch size or latency budget.
 2. **Scale-to-Zero Memory Reclamation & LRU Eviction** (`src/sweeper.rs`, `src/registry.rs`) to automatically unload inactive models from GPU VRAM / host RAM, enforce `max_loaded_models` capacity caps, and recover from reactive OOM errors.
 3. **Model Pinning** (`src/model.rs`, `src/registry.rs`) to eagerly load critical models at startup or runtime and exempt them from scale-to-zero and LRU eviction.
 4. **Vertical Multi-Replica Autoscaling & Routing** (`src/routing.rs`, `src/registry.rs`) to spin up additional model replicas under queue pressure and distribute traffic via `LeastQueue`, `RoundRobin`, or `Random` strategies with differential scale-down timeouts.
-5. **Multi-Runtime Execution** (`src/backend/`) supporting ONNX Runtime (`ort`), Hugging Face Safetensors (`candle`), pure-Rust XGBoost/GBDT trees (`hessboost`), and deterministic mock models (`mock:`).
+5. **Multi-Runtime Execution** (`src/backend/`) supporting ONNX Runtime (`ort`), Hugging Face Safetensors (`candle`), pure-Rust XGBoost/GBDT trees (`hessboost`), isolated Python workers (`worker_backend.rs`), and deterministic mock models (`mock:`).
 6. **Dual HTTP REST & Native gRPC Transports** (`src/server/`) with optional shared TLS (`rustls`) and 3-tier Role-Based Access Control (`Admin`, `Inference`, `ReadOnly` via constant-time API keys and HMAC JWTs).
+7. **Real-Time Event Streaming Ingestion & Egress** (`src/stream/`) connecting inference pipelines to Apache Kafka, RabbitMQ, Redis Streams, and Mock streams with at-least-once delivery.
+8. **Process-Isolated Custom Python Worker Models** (`src/backend/worker_backend.rs`, `python/snoozeml/worker.py`) running arbitrary frameworks (e.g. Amazon Chronos-Bolt, PyTorch) in child processes with binary IPC framing and complete memory reclamation.
+9. **Official Python SDK** (`python/snoozeml`) providing dual REST/gRPC clients, NumPy/PyTorch tensor converters, worker test utilities, Sphinx docs, and a full pytest test suite.
 
 ---
 
@@ -20,13 +23,21 @@ This document provides cross-vendor context and engineering rules for AI coding 
 
 ```text
 SnoozeML/
-├── Cargo.toml                  # Crate manifest & feature flags (ort-backend, candle-backend, tree-backend, cuda, tensorrt, coreml)
+├── Cargo.toml                  # Crate manifest & feature flags (ort, candle, tree, worker, streams, cuda, tensorrt, coreml)
 ├── build.rs                    # Compiles proto/snoozeml/v1/inference.proto via tonic-build + protoc-bin-vendored
 ├── proto/snoozeml/v1/          # SnoozeML native gRPC schema (snoozeml.v1.InferenceService)
 │   └── inference.proto
-├── .agents/                    # Cross-vendor AI agent rules & on-demand workflow skills
-│   ├── rules/                  # Always-on rules (rust.md, architecture-invariants.md, api-and-security.md)
-│   └── skills/                 # Progressive-disclosure skills (add-inference-backend, add-api-and-cli-command, verification-and-benchmarking)
+├── .agents/                    # Cross-vendor AI agent rules, hooks & on-demand workflow skills
+│   ├── hooks.json              # Automated lifecycle hooks (safety gates, tool checks)
+│   ├── hooks/                  # Hook runner scripts (safety_gate.py)
+│   ├── rules/                  # Always-on rules (rust.md, architecture-invariants.md, api-and-security.md, python.md, streaming.md, documentation.md)
+│   └── skills/                 # Progressive-disclosure runbooks:
+│       ├── add-api-and-cli-command    # Adding endpoints, gRPC methods, CLI commands, TUI actions
+│       ├── add-inference-backend      # Candle Safetensors, native Rust backends, Python worker models
+│       ├── python-sdk-and-worker      # Python SDK client, converters, custom worker authoring, pytest
+│       ├── streaming-integration      # Kafka, RabbitMQ, Redis Streams configuration & drivers
+│       ├── docs-and-examples          # Astro Starlight & Sphinx documentation, Jupyter notebooks
+│       └── verification-and-benchmarking # Cargo QA gate, pytest suite, synthetic OOM, load testing
 ├── src/
 │   ├── lib.rs                  # Crate root; enforces #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)] & #![warn(missing_docs)]
 │   ├── main.rs                 # Binary entrypoint (`snooze`)
@@ -44,7 +55,16 @@ SnoozeML/
 │   │   ├── candle_backend.rs   # Native Safetensors backend (sequential Linear/MLP + TransformerOrVision)
 │   │   ├── local_loader.rs     # Dynamic HF Safetensors loader (BERT, JinaBERT, NomicBERT, DistilBERT, CLIP, ViT, DINOv2)
 │   │   ├── tree_backend.rs     # Pure-Rust XGBoost/GBDT backend via hessboost
+│   │   ├── worker_backend.rs   # Process-isolated Python worker backend with binary IPC framing
 │   │   └── mock_backend.rs     # Deterministic mock backend ("mock:*") including simulated OOM testing
+│   ├── stream/
+│   │   ├── mod.rs              # Streaming engine orchestrator & task spawner
+│   │   ├── driver.rs           # StreamDriver async trait
+│   │   ├── message.rs          # StreamMessage serialization & tensor mapping
+│   │   ├── kafka.rs            # Apache Kafka driver via rskafka
+│   │   ├── rabbitmq.rs         # RabbitMQ driver via lapin
+│   │   ├── redis_stream.rs     # Redis Streams driver via redis
+│   │   └── mock_stream.rs      # Deterministic in-memory mock stream for testing
 │   ├── server/
 │   │   ├── mod.rs              # Dual HTTP + gRPC server orchestrator, shared Rustls/Tonic TLS & graceful shutdown
 │   │   ├── http.rs             # Axum REST API (/v1/models, /infer, /load, /unload, /pin, /unpin, /health/*, /metrics)
@@ -57,8 +77,8 @@ SnoozeML/
 │       ├── mod.rs              # Clap CLI subcommands (serve, status, load, unload, pin, unpin, monitor, models, init, download)
 │       ├── download.rs         # Hugging Face Hub repository downloader (hf-hub)
 │       └── tui.rs              # Interactive Ratatui + Crossterm terminal dashboard
-├── tests/                      # Dedicated integration & behavioral test suite (no mocks)
-├── examples/                   # Interactive Jupyter notebooks (Scikit-learn ONNX, XGBoost tree, Pipeline regression)
+├── tests/                      # Dedicated integration & behavioral test suite (zero mocks)
+├── examples/                   # Interactive Jupyter notebooks (Scikit-learn ONNX, XGBoost tree, Chronos-Bolt)
 ├── python/                     # Official `snoozeml` Python SDK (HTTP/gRPC client, converters, Sphinx docs & pytest suite)
 ├── tools/                      # Python load tester (perf_test.py), gRPC verifier (test_grpc.py) & XGBoost trainer (train_tree.py)
 ├── docs/                       # Astro Starlight user & architecture documentation
@@ -91,21 +111,33 @@ All code in `src/` is compiled under `#![deny(clippy::unwrap_used, clippy::expec
 - **Dedicated `tests/` Directory**: Place integration and behavioral tests in `tests/`. Keep inline `#[cfg(test)]` blocks in `src/` strictly limited to testing `pub(crate)` or private internals that cannot be reached via public APIs.
 - **Zero Mocks**: Exercise real state machines, real HTTP/gRPC routers (`tower::ServiceExt::oneshot` or ephemeral local listeners), and the built-in `mock:` tensor backend rather than mock traits.
 
+### 3.5 Python SDK & Custom Worker Standards (`.agents/rules/python.md`)
+- **Strict Typing**: All SDK methods in `python/snoozeml/` require complete type hints using `typing` and `numpy.typing.NDArray`.
+- **C-Contiguous Memory**: Enforce `np.ascontiguousarray` before serializing arrays to raw little-endian bytes. Auto-detach PyTorch tensors via `.detach().cpu().numpy()`.
+- **Zero Heavy Imports in Core Worker**: Never import `torch` or `transformers` at module scope in `worker.py`; load them only inside user `snooze_model.py` scripts.
+
+### 3.6 Event Streaming Invariants (`.agents/rules/streaming.md`)
+- **Decoupled Tokio Tasks**: Run each consumer in an isolated actor task. Network disconnects must never crash or block the server.
+- **Commit-After-Infer**: Only acknowledge messages or commit partition offsets after model inference and egress dispatch succeed.
+
 ---
 
 ## 4. Build, Test & Lint Commands
 
-Always run both the test suite and strict Clippy lints before completing a task:
+Always run both the Rust quality gates and the Python SDK test suite before completing a task:
 
 ```bash
-# Run all unit and integration tests
+# 1. Run all unit and integration tests across all targets
 cargo test --all-targets
 
-# Run strict Clippy static analysis (must pass with zero warnings)
+# 2. Run strict Clippy static analysis (must pass with zero warnings)
 cargo clippy --all-targets -- -D warnings
 
-# Verify formatting
+# 3. Verify formatting
 cargo fmt --check
+
+# 4. Run Python SDK and worker pytest suite
+pytest python/tests -v
 ```
 
 ---
