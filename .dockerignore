@@ -1,0 +1,28 @@
+# Version control and agent metadata
+.git/
+.gitignore
+.agents/
+.gemini/
+.vscode/
+.idea/
+
+# Rust build artifacts and temporary files
+target/
+**/*.rs.bk
+scratch/
+*.log
+*.tmp
+
+# Documentation and design assets (not required for binary compilation)
+docs/
+design_docs/
+
+# Model files and weight artifacts (mount as volume to /models instead of baking into base image)
+models/
+*.onnx
+*.safetensors
+*.bin
+*.pt
+
+# Docker files
+docker-compose*.yml

@@ -1,0 +1,6 @@
+# Chronos-Bolt requirements for SnoozeML custom worker
+chronos-forecasting>=0.1.0
+torch>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+snoozeml>=0.1.0

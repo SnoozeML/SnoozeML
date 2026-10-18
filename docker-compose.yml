@@ -1,0 +1,25 @@
+services:
+  snoozeml:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: snoozeml:latest
+    container_name: snoozeml
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    volumes:
+      # Mount host models directory into container models volume
+      - ./models:/models
+    environment:
+      - RUST_LOG=info
+      - SNOOZE_MODELS_DIR=/models
+      # Optional: uncomment to enable JWT authentication enforcement
+      # - SNOOZE_JWT_SECRET=your-production-jwt-secret-key-at-least-32-chars
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

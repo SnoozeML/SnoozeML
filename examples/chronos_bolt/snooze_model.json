@@ -1,0 +1,11 @@
+{
+  "entrypoint": "snooze_model.py",
+  "class": "Model",
+  "load_timeout_secs": 600,
+  "request_timeout_secs": 120,
+  "tensor_format": "numpy",
+  "env": {
+    "TOKENIZERS_PARALLELISM": "false",
+    "OMP_NUM_THREADS": "1"
+  }
+}

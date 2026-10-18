@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=65.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snoozeml"
+version = "0.1.0"
+description = "Official Python client and ML model conversion toolkit for the SnoozeML inference daemon"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+authors = [
+    { name = "SnoozeML Contributors" }
+]
+keywords = ["machine-learning", "inference", "onnx", "grpc", "xgboost", "rust", "snoozeml"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # Lightweight client core: used to upload models and call admin endpoints via HTTP
+    "requests>=2.28.0",
+]
+
+[project.optional-dependencies]
+# Explicit alias for the lightweight management client
+client = [
+    "requests>=2.28.0",
+]
+
+# Native high-performance gRPC inference
+grpc = [
+    "grpcio>=1.60.0",
+    "grpcio-health-checking>=1.60.0",
+    "protobuf>=4.25.0",
+    "numpy>=1.24.0",
+]
+
+# Process-isolated custom model worker runtime (numpy tensor formatting)
+worker = [
+    "numpy>=1.24.0",
+]
+
+# Offline model conversion toolkit (Scikit-Learn, PyTorch, XGBoost -> ONNX/JSON)
+converters = [
+    "numpy>=1.24.0",
+    "scikit-learn>=1.2.0",
+    "xgboost>=2.0.0",
+    "onnx>=1.15.0",
+    "skl2onnx>=1.16.0",
+    "torch>=2.0.0",
+]
+
+# Full alias providing all runtime, converter, and inference capabilities
+full = [
+    "grpcio>=1.60.0",
+    "grpcio-health-checking>=1.60.0",
+    "protobuf>=4.25.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.2.0",
+    "xgboost>=2.0.0",
+    "onnx>=1.15.0",
+    "skl2onnx>=1.16.0",
+    "torch>=2.0.0",
+]
+
+# Development, linting, testing, and documentation dependencies
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "mypy>=1.9.0",
+    "ruff>=0.3.0",
+    "sphinx>=7.2.0",
+    "shibuya>=2024.8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["snoozeml*"]
+
+[tool.setuptools.package-data]
+snoozeml = ["py.typed", "_proto/snoozeml/v1/*.pyi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"

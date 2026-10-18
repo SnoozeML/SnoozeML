@@ -1,0 +1,33 @@
+---
+title: SnoozeML — Bare-Metal Scale-to-Zero ML Inference Daemon
+description: High-performance Rust inference daemon with dynamic micro-batching, scale-to-zero VRAM reclamation, and multi-runtime execution.
+template: splash
+hero:
+  tagline: Serverless scale-to-zero economics meets bare-metal Rust inference performance for ONNX, Safetensors, and XGBoost.
+  actions:
+    - text: Get Started
+      link: /SnoozeML/getting-started/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: Python SDK Reference
+      link: /SnoozeML/python/
+      icon: external
+      variant: secondary
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Zero-Idle Scale-to-Zero" icon="rocket">
+    Automatically unloads inactive models from GPU VRAM and host RAM after a configurable idle timeout, with LRU & reactive OOM eviction.
+  </Card>
+  <Card title="Adaptive Dynamic Micro-Batching" icon="bars">
+    Coalesces concurrent HTTP REST, gRPC, and Kafka/NATS requests along `Axis(0)` within sub-millisecond windows.
+  </Card>
+  <Card title="Multi-Runtime Execution" icon="setting">
+    Serve ONNX Runtime (`ort`), Hugging Face Safetensors (`candle`), and pure-Rust GBDT trees (`hessboost`) from a single binary.
+  </Card>
+  <Card title="Official Python SDK" icon="document">
+    Convert Scikit-Learn, PyTorch, and XGBoost models to ONNX and query over HTTP or high-throughput gRPC.
+  </Card>
+</CardGrid>

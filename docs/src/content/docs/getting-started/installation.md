@@ -1,0 +1,175 @@
+---
+title: "Installation & Build"
+description: "SnoozeML compiles down to a single, statically or dynamically linked binary called `snooze`. It has no external Python or Java runtime dependencies."
+---
+
+SnoozeML compiles down to a single, statically or dynamically linked binary called `snooze`. It has no external Python or Java runtime dependencies.
+
+---
+
+## 1. Prerequisites
+
+Before building SnoozeML, ensure your system has the following development tools installed:
+
+- **Rust & Cargo**: Version 1.75 or later. Install via [rustup.rs](https://rustup.rs/):
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+- **C/C++ Build Essentials**: Required to link native execution providers (ONNX Runtime / Candle):
+  - **Linux (Ubuntu/Debian)**: `sudo apt-get install build-essential cmake pkg-config`
+  - **macOS**: `xcode-select --install` and `brew install cmake`
+  - **Windows**: Visual Studio 2022 Build Tools (with the "Desktop development with C++" workload) and CMake.
+- **(Optional) Documentation Tools**: If you wish to build or preview this documentation portal locally:
+  - Node.js (>= 20) and npm: `npm --prefix docs install && npm --prefix docs run dev`
+  - Python (>= 3.9) and Sphinx: `pip install -e "python[dev]" && sphinx-build -b html python/docs docs/dist/python`
+- **(Optional) NVIDIA CUDA / TensorRT**:
+  - NVIDIA Driver (>= 525.60.13 recommended)
+  - CUDA Toolkit (11.8 or 12.x) and cuDNN if compiling with GPU support.
+
+---
+
+## 2. Installing via Cargo
+
+You can install SnoozeML directly into your Cargo binary path:
+
+```bash
+cargo install --path .
+```
+
+To install with CUDA acceleration enabled:
+
+```bash
+cargo install --path . --features cuda
+```
+
+The resulting `snooze` binary will be available in your `$HOME/.cargo/bin` directory (make sure this is in your `PATH`).
+
+---
+
+## 3. Compiling from Source
+
+Clone the repository:
+
+```bash
+git clone https://github.com/SnoozeML/SnoozeML.git
+cd SnoozeML
+```
+
+### Build Profiles & Feature Flags
+
+SnoozeML provides modular compilation profiles tailored for different deployment targets:
+
+| Target Environment | Cargo Build Command | Included Capabilities |
+| :--- | :--- | :--- |
+| **Standard (CPU & Host)** | `cargo build --release` | Default build. Includes ONNX Runtime (CPU) and Candle (Safetensors) backends. |
+| **NVIDIA CUDA** | `cargo build --release --features cuda` | Enables NVIDIA CUDA execution provider for ONNX and GPU acceleration for Candle. |
+| **NVIDIA TensorRT** | `cargo build --release --features tensorrt` | Enables high-performance NVIDIA TensorRT execution provider. |
+| **Apple Silicon (macOS)** | `cargo build --release --features coreml` | Enables Apple CoreML backend for ONNX Runtime alongside Metal acceleration for Candle. |
+| **Lightweight / Mock** | `cargo build --release --no-default-features` | Ultra-fast compile without native ORT libraries, useful for CI/CD mock validation. |
+
+Once compilation completes, the standalone executable is placed at:
+```bash
+# On Linux / macOS:
+./target/release/snooze
+
+# On Windows:
+.\target\release\snooze.exe
+```
+
+---
+
+## 4. Container Image Build (Docker)
+
+SnoozeML includes a high-performance multi-stage Docker build pipeline powered by [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) on Debian Trixie (`lukemathwalker/cargo-chef:latest-rust-1-slim-trixie` and `debian:trixie-slim`). It caches all third-party crate dependencies in a dedicated layer (`cargo chef cook`), allowing near-instant rebuilds (~0.3s cached) while generating a lean, non-root runtime image (~200MB).
+
+### Building the Image
+
+Compile the image locally:
+
+```bash
+# On Linux / macOS (Bash / Zsh):
+DOCKER_BUILDKIT=1 docker build -t snoozeml:latest .
+
+# On Windows (PowerShell):
+$env:DOCKER_BUILDKIT=1; docker build -t snoozeml:latest .
+# Or simply (BuildKit is enabled by default in modern Docker Desktop):
+docker build -t snoozeml:latest .
+```
+
+### Running with Docker
+
+Serve models from a local host directory:
+
+```bash
+docker run -d \
+  --name snoozeml \
+  -p 8080:8080 \
+  -p 50051:50051 \
+  -v $(pwd)/models:/models:ro \
+  snoozeml:latest
+```
+
+Run in demonstration mode with the built-in mock model (no model files required):
+
+```bash
+docker run -it --rm \
+  -p 8080:8080 \
+  -p 50051:50051 \
+  snoozeml:latest serve --demo
+```
+
+### Using Docker Compose
+
+A standard `docker-compose.yml` is provided at the root of the repository:
+
+```bash
+docker compose up -d
+```
+
+---
+
+## 5. Verifying the Installation
+
+Verify that the CLI is accessible and inspect the available commands:
+
+```bash
+# Locally:
+snooze --help
+
+# Or via Docker:
+docker run --rm snoozeml:latest --help
+```
+
+You should see output similar to:
+
+```text
+High-performance ONNX & deep learning micro-batch inference daemon.
+
+Usage: snooze <COMMAND>
+
+Commands:
+  serve     Start the inference daemon server
+  models    Manage models directory and configuration files
+  download  Download a model repository from Hugging Face Hub [aliases: hf-download]
+  init      Quick shortcut to initialize or update a model directory configuration
+  status    Query the status and active models of a running SnoozeML server
+  load      Explicitly trigger loading a model into memory
+  unload    Explicitly trigger unloading a model from memory (scale-to-zero override)
+  monitor   Launch a live updating terminal dashboard for monitoring
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+---
+
+## 6. Helpful Environment Variables
+
+SnoozeML respects several environment variables to streamline configuration in containerized and cloud environments:
+
+- `SNOOZE_MODELS_DIR`: Sets the default root directory for model files (defaults to `./models`, or `/models` in the official container image).
+- `SNOOZE_JWT_SECRET`: Sets the HMAC shared secret for validating JWT authentication tokens.
+- `HF_TOKEN`: Sets the Hugging Face authentication token when downloading gated or private repositories.
+- `RUST_LOG`: Configures structured logging output levels (e.g. `RUST_LOG=info` or `RUST_LOG=snooze_ml=debug`).

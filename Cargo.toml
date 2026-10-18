@@ -1,0 +1,106 @@
+[package]
+name = "snooze-ml"
+version = "0.1.0"
+edition = "2021"
+authors = ["Federico Argilli"]
+description = "A high-performance Rust ONNX and multi-format inference daemon with dynamic micro-batching and scale-to-zero capabilities."
+license = "Apache-2.0"
+
+[lib]
+name = "snooze_ml"
+path = "src/lib.rs"
+
+[[bin]]
+name = "snooze"
+path = "src/main.rs"
+
+[dependencies]
+# Async Runtime & Networking
+tokio = { version = "1.38", features = ["full"] }
+axum = { version = "0.7", features = ["macros", "json", "multipart"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+tonic = { version = "0.12", features = ["tls"] }
+prost = "0.13"
+tonic-health = "0.12"
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+
+# Math & Data manipulation
+ndarray = { version = "0.17", features = ["serde"] }
+bytes = "1.6"
+bytemuck = { version = "1.16", features = ["extern_crate_alloc"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Concurrency & Offloading
+rayon = "1.10"
+crossbeam-channel = "0.5"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error Handling & CLI
+thiserror = "1.0"
+clap = { version = "4.5", features = ["derive", "env"] }
+ureq = { version = "3.4.2", default-features = false, features = ["json"] }
+hf-hub = "1.0.0"
+
+# Authentication & Security
+jsonwebtoken = "9.3"
+subtle = "2.6"
+sha2 = "0.10"
+
+# ONNX Runtime (optional / feature-gated)
+ort = { version = "2.0.0-rc.4", optional = true }
+
+# Candle & Safetensors Runtime (optional / feature-gated)
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
+safetensors = { version = "0.4", optional = true }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"], optional = true }
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+
+# Tree Model Runtime (optional / feature-gated)
+hessboost = { version = "0.1.1", optional = true }
+
+# Streaming Dependencies (optional / feature-gated)
+async-trait = { version = "0.1", optional = true }
+lapin = { version = "2.3", default-features = false, features = ["rustls"], optional = true }
+redis = { version = "0.26", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+rskafka = { version = "0.5", optional = true }
+
+[features]
+default = ["ort-backend", "candle-backend", "tree-backend", "streams", "worker-backend"]
+ort-backend = ["dep:ort"]
+candle-backend = ["dep:candle-core", "dep:candle-nn", "dep:safetensors", "dep:candle-transformers", "dep:tokenizers"]
+tree-backend = ["dep:hessboost"]
+worker-backend = []
+cuda = ["ort-backend", "ort?/cuda"]
+tensorrt = ["ort-backend", "ort?/tensorrt"]
+coreml = ["ort-backend", "ort?/coreml"]
+
+# Streaming features
+streams = ["dep:async-trait"]
+streams-rabbitmq = ["streams", "dep:lapin"]
+streams-redis = ["streams", "dep:redis"]
+streams-kafka = ["streams", "dep:rskafka"]
+streams-all = ["streams", "streams-rabbitmq", "streams-redis", "streams-kafka"]
+
+[build-dependencies]
+tonic-build = { version = "0.12", features = ["prost"] }
+protoc-bin-vendored = "3.2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+http-body-util = "0.1"
+rcgen = "0.14"
+
+[profile.test]
+debug = 0
+
+[profile.dev]
+debug = 1
