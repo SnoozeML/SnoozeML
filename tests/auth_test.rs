@@ -956,3 +956,126 @@ protect_metrics = true
         .unwrap();
     assert_eq!(identity.role, Role::Admin);
 }
+
+#[tokio::test]
+async fn test_jwt_nbf_and_type_confusion_rejection() {
+    let registry = ModelRegistry::new();
+    let metrics = ServerMetrics::new_shared();
+    let model = create_test_model("model-jwt-nbf");
+    registry.register(model).await;
+
+    let auth_config = AuthConfig {
+        enabled: true,
+        protect_metrics: false,
+        api_keys: vec![],
+        jwt: Some(JwtConfig {
+            secret: Some(TEST_JWT_SECRET.to_string()),
+            secret_env: None,
+            algorithm: JwtAlgorithm::HS256,
+            issuer: None,
+            audience: None,
+            leeway_secs: 10,
+        }),
+    };
+    let auth_svc = Arc::new(AuthService::new(auth_config).unwrap());
+    let app = create_router(AppState::new(registry, metrics).with_auth(auth_svc.clone()));
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize;
+
+    // 1. Valid numeric nbf in the past -> 200 OK
+    let valid_nbf_claims = JwtClaims {
+        sub: "valid-nbf-user".to_string(),
+        exp: now + 3600,
+        iat: Some(now),
+        nbf: Some(now.saturating_sub(60)),
+        iss: None,
+        aud: None,
+        role: Some(Role::Inference),
+        roles: None,
+    };
+    let valid_token = encode(
+        &Header::default(),
+        &valid_nbf_claims,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+    let mut req_ok = sample_infer_request("model-jwt-nbf");
+    req_ok.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {valid_token}").parse().unwrap(),
+    );
+    let resp_ok = app.clone().oneshot(req_ok).await.unwrap();
+    assert_eq!(resp_ok.status(), StatusCode::OK);
+
+    // 2. Numeric nbf in the far future -> 401 Unauthorized
+    let future_nbf_claims = JwtClaims {
+        sub: "future-nbf-user".to_string(),
+        exp: now + 7200,
+        iat: Some(now),
+        nbf: Some(now + 3600),
+        iss: None,
+        aud: None,
+        role: Some(Role::Admin),
+        roles: None,
+    };
+    let future_token = encode(
+        &Header::default(),
+        &future_nbf_claims,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+    assert!(auth_svc.authenticate_jwt(&future_token).is_err());
+    let mut req_future = sample_infer_request("model-jwt-nbf");
+    req_future.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {future_token}").parse().unwrap(),
+    );
+    let resp_future = app.clone().oneshot(req_future).await.unwrap();
+    assert_eq!(resp_future.status(), StatusCode::UNAUTHORIZED);
+
+    // 3. Type confusion attack: string-typed "nbf" ("99999999999") -> 401 Unauthorized
+    let string_nbf_payload = serde_json::json!({
+        "sub": "attacker-nbf-string",
+        "nbf": "99999999999",
+        "exp": now + 3600,
+        "role": "admin"
+    });
+    let string_nbf_token = encode(
+        &Header::default(),
+        &string_nbf_payload,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+    assert!(auth_svc.authenticate_jwt(&string_nbf_token).is_err());
+    let mut req_str_nbf = sample_infer_request("model-jwt-nbf");
+    req_str_nbf.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {string_nbf_token}").parse().unwrap(),
+    );
+    let resp_str_nbf = app.clone().oneshot(req_str_nbf).await.unwrap();
+    assert_eq!(resp_str_nbf.status(), StatusCode::UNAUTHORIZED);
+
+    // 4. Type confusion attack: string-typed "exp" ("never") -> 401 Unauthorized
+    let string_exp_payload = serde_json::json!({
+        "sub": "attacker-exp-string",
+        "exp": "never",
+        "role": "admin"
+    });
+    let string_exp_token = encode(
+        &Header::default(),
+        &string_exp_payload,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+    assert!(auth_svc.authenticate_jwt(&string_exp_token).is_err());
+    let mut req_str_exp = sample_infer_request("model-jwt-nbf");
+    req_str_exp.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {string_exp_token}").parse().unwrap(),
+    );
+    let resp_str_exp = app.oneshot(req_str_exp).await.unwrap();
+    assert_eq!(resp_str_exp.status(), StatusCode::UNAUTHORIZED);
+}

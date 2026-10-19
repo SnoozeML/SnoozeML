@@ -474,22 +474,22 @@ pub struct JwtClaims {
     /// Expiration timestamp (epoch seconds).
     pub exp: usize,
     /// Optional issued-at timestamp.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iat: Option<usize>,
     /// Optional not-before timestamp.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nbf: Option<usize>,
     /// Optional token issuer.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
     /// Optional token audience.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aud: Option<String>,
     /// Optional single role claim.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
     /// Optional list of roles claim.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<Role>>,
 }
 
@@ -630,6 +630,7 @@ impl AuthService {
             let key = DecodingKey::from_secret(secret.as_bytes());
             let mut validation = Validation::new(jwt.algorithm.into());
             validation.leeway = jwt.leeway_secs;
+            validation.validate_nbf = true;
 
             if let Some(ref iss) = jwt.issuer {
                 validation.set_issuer(&[iss]);
