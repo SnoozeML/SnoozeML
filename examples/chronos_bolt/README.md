@@ -108,8 +108,8 @@ resp = client.infer(
 )
 
 # Extract predictions
-quantiles = resp.outputs["forecast"].as_numpy()  # Shape: (1, 9, 12)
-median = resp.outputs["median"].as_numpy()        # Shape: (1, 12)
+quantiles = resp.get_numpy("forecast")  # Shape: (1, 9, 12)
+median = resp.get_numpy("median")        # Shape: (1, 12)
 
 print(f"Inference latency: {resp.duration_ms:.2f} ms")
 print(f"12-step median forecast: {median[0]}")

@@ -34,7 +34,7 @@ SnoozeML solves this by bridging the gap between **serverless scale-to-zero econ
 
 This documentation is designed to get you up and running quickly while providing deep clarity into how the system behaves under load:
 
-- **[Getting Started](/SnoozeML/getting-started/installation/)**: Install SnoozeML, run your first model in under two minutes, and download models from the Hugging Face Hub.
+- **[Getting Started](/SnoozeML/getting-started/installation/)**: Install SnoozeML, run your first model in under two minutes, explore [interactive examples](/SnoozeML/getting-started/examples/), and download models from the Hugging Face Hub.
 - **[Serving Models](/SnoozeML/serving/starting-the-server/)**: Learn how to launch the daemon, configure `models.toml`, enable hardware acceleration (CUDA, TensorRT, Apple Silicon), and manage dual REST and gRPC listeners.
 - **[Scaling & Performance Mechanics](/SnoozeML/scaling/overview/)**: A deep dive into what to expect from the scaling system—how dynamic micro-batching works, how scale-to-zero behaves, cold-start latency vs. warm inference, replica scaling, and OOM protection.
 - **[Authentication & Security](/SnoozeML/security/overview/)**: How to set up API keys, configure JWT tokens, manage role permissions, and secure operational HTTP and gRPC endpoints.

@@ -107,12 +107,11 @@ snooze serve --models-dir ./models
 ```
 
 ```bash
-curl -s -X POST [http://127.0.0.1:8080/v1/models/bge-small-en-v1.5/infer](http://127.0.0.1:8080/v1/models/bge-small-en-v1.5/infer) \
+curl -s -X POST http://127.0.0.1:8080/v1/models/bge-small-en-v1.5/infer \
   -H "Content-Type: application/json" \
   -d '{
     "inputs": [{ "name": "input_ids", "shape": [1, 4], "data": [101.0, 7592.0, 2088.0, 102.0] }]
   }' | jq .
-
 ```
 
 SnoozeML lazily loads `bge-small-en-v1.5` on the first request, runs the forward pass, and returns the 384-dimensional embedding tensor. After 300 seconds of inactivity, weights are automatically deallocated back to `idle`.
@@ -183,12 +182,11 @@ with SnoozeClient(endpoint="127.0.0.1:50051", use_grpc=True) as client:
 Manage lifecycle states (`idle`, `loading`, `ready`, `busy`) and live telemetry from the CLI or REST API:
 
 ```bash
-snooze status --endpoint [http://127.0.0.1:8080](http://127.0.0.1:8080)    # Inspect states & queue depths
+snooze status --endpoint http://127.0.0.1:8080    # Inspect states & queue depths
 snooze load --model-id bge-small-en-v1.5 --pin    # Warm up & exempt from scale-to-zero
 snooze unpin --model-id bge-small-en-v1.5         # Re-enable idle eviction
 snooze unload --model-id bge-small-en-v1.5        # Immediately reclaim RAM/VRAM
-snooze monitor --endpoint [http://127.0.0.1:8080](http://127.0.0.1:8080)   # Launch interactive Ratatui TUI
-
+snooze monitor --endpoint http://127.0.0.1:8080   # Launch interactive Ratatui TUI
 ```
 
 | Endpoint | Method | Role | Description |
@@ -272,14 +270,9 @@ docker compose up snooze-slim
 
 ## Documentation, Examples & Quality Assurance
 
-* **Interactive Notebooks (`examples/`)**:
-* [`01_sklearn_onnx.ipynb`](https://www.google.com/search?q=examples/01_sklearn_onnx.ipynb) — Scikit-Learn Random Forest to ONNX batched inference.
-* [`02_xgboost_tree.ipynb`](https://www.google.com/search?q=examples/02_xgboost_tree.ipynb) — XGBoost to `.xgb.json` on the pure-Rust tree backend.
-* [`03_pipeline_regression_onnx.ipynb`](https://www.google.com/search?q=examples/03_pipeline_regression_onnx.ipynb) — Scikit-Learn `Pipeline` (`StandardScaler` + `Ridge`) to ONNX.
-* [`04_chronos_bolt_custom_model.ipynb`](https://www.google.com/search?q=examples/04_chronos_bolt_custom_model.ipynb) — Zero-shot time-series forecasting via isolated Python worker.
-
-
-* **Deep Dives**: See [`docs/architecture.md`](https://www.google.com/search?q=docs/architecture.md), [`docs/api.md`](https://www.google.com/search?q=docs/api.md), [`docs/configuration.md`](https://www.google.com/search?q=docs/configuration.md), and the [Production Deployment Guide](https://www.google.com/search?q=docs/src/content/docs/operations/production.md).
+* **Interactive Examples**: Step-by-step Jupyter notebooks and custom worker templates (Scikit-Learn ONNX, pure-Rust XGBoost trees, Amazon Chronos-Bolt, and real-time Kafka event streaming) are located in the [`examples/`](examples/) directory.
+* **Documentation Portal**: Run `npm --prefix docs run dev` to launch the local Astro Starlight developer portal, or build the complete documentation bundle with `npm --prefix docs run build` and `sphinx-build -b html python/docs docs/dist/python`.
+* **Deep Dives**: Architectural and operational specifications are available in [`docs/architecture.md`](docs/architecture.md), [`docs/api.md`](docs/api.md), [`docs/configuration.md`](docs/configuration.md), and the [Production Deployment Guide](docs/src/content/docs/operations/production.md).
 * **Strict QA**: All production Rust code enforces `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`. Verify with `cargo test --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `pytest python/tests -v`.
 
 ---

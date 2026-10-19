@@ -30,6 +30,7 @@ export default defineConfig({
             'getting-started/installation',
             'getting-started/quickstart',
             'getting-started/downloading-models',
+            'getting-started/examples',
           ],
         },
         {

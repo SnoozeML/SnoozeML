@@ -23,6 +23,8 @@ import pytest
 from sklearn.datasets import load_iris
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 xgb = pytest.importorskip("xgboost")
 
 from snoozeml import (

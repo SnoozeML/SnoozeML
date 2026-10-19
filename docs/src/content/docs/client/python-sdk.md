@@ -177,3 +177,9 @@ from snoozeml import configure_logging
 
 configure_logging(level="INFO", format_json=False)
 ```
+
+---
+
+## 5. Interactive Notebooks & End-to-End Examples
+
+For runnable tutorials covering Scikit-Learn pipelines, XGBoost classification, Chronos-Bolt probabilistic forecasting, and real-time Kafka event streaming, explore the [Interactive Examples Guide](/SnoozeML/getting-started/examples/) or inspect the `examples/` directory in the repository.
