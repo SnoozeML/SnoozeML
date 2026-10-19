@@ -48,7 +48,7 @@ ureq = { version = "3.4.2", default-features = false, features = ["json"] }
 hf-hub = "1.0.0"
 
 # Authentication & Security
-jsonwebtoken = "9.3"
+jsonwebtoken = "10.3"
 subtle = "2.6"
 sha2 = "0.10"
 
