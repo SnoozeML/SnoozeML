@@ -1,6 +1,5 @@
 <div align="center">
-
-# SnoozeML
+<img width="1514" height="512" alt="SNOOZE ML 1" src="https://github.com/user-attachments/assets/c54369c3-14c6-4cb0-b556-7be55e8a38c2" />
 
 **Single-binary, scale-to-zero ML & deep learning inference daemon written in Rust.**
 
