@@ -18,42 +18,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-unix:
+  build-linux:
     name: Build (${{ matrix.artifact_name }})
     runs-on: ${{ matrix.os }}
+    container:
+      image: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
+            container: quay.io/pypa/manylinux_2_28_x86_64
             target: x86_64-unknown-linux-gnu
             artifact_name: snooze-linux-x86_64
             features: "streams-all"
             rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
           - os: ubuntu-22.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
             target: aarch64-unknown-linux-gnu
             artifact_name: snooze-linux-aarch64
             features: "streams-all"
             rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
-          - os: macos-14
-            target: aarch64-apple-darwin
-            artifact_name: snooze-macos-aarch64
-            features: "streams-all,coreml"
-            rpath_flags: "-C link-arg=-Wl,-rpath,@executable_path/../lib -C link-arg=-Wl,-rpath,@executable_path"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+      - name: Ensure RHEL 8 / glibc 2.28 build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libssl-dev \
-            ca-certificates \
-            build-essential
+          dnf install -y pkgconfig openssl-devel ca-certificates
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -63,7 +56,7 @@ jobs:
       - name: Rust Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}-${{ matrix.features }}
+          key: ${{ matrix.target }}-glibc2.28-${{ matrix.features }}
 
       - name: Build release binary
         env:
@@ -79,19 +72,14 @@ jobs:
 
           # Bundle any ONNX Runtime shared libraries downloaded by ort during build
           find target/${{ matrix.target }}/release -maxdepth 4 \
-            \( -name "libonnxruntime*.so*" -o -name "libonnxruntime*.dylib*" \) \
+            -name "libonnxruntime*.so*" \
             -exec cp -P {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
 
           cp LICENSE README.md install.sh dist/${{ matrix.artifact_name }}/
           tar -C dist -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}
+          sha256sum ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
 
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
-          else
-            shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
-          fi
-
-      - name: Smoke test packaged binary
+      - name: Smoke test packaged binary on glibc 2.28 (RHEL 8 compatible)
         run: |
           ./dist/${{ matrix.artifact_name }}/bin/snooze --version
 
@@ -102,6 +90,56 @@ jobs:
           path: |
             ${{ matrix.artifact_name }}.tar.gz
             ${{ matrix.artifact_name }}.tar.gz.sha256
+
+  build-macos:
+    name: Build (snooze-macos-aarch64)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-apple-darwin-streams-all-coreml
+
+      - name: Build release binary
+        env:
+          RUSTFLAGS: "-C link-arg=-Wl,-rpath,@executable_path/../lib -C link-arg=-Wl,-rpath,@executable_path"
+        run: |
+          cargo build --release --bin snooze --target aarch64-apple-darwin --features "streams-all,coreml"
+
+      - name: Package tarball and SHA-256 checksum
+        run: |
+          mkdir -p dist/snooze-macos-aarch64/bin dist/snooze-macos-aarch64/lib
+          cp target/aarch64-apple-darwin/release/snooze dist/snooze-macos-aarch64/bin/snooze
+          strip dist/snooze-macos-aarch64/bin/snooze || true
+
+          # Bundle any ONNX Runtime shared libraries downloaded by ort during build
+          find target/aarch64-apple-darwin/release -maxdepth 4 \
+            -name "libonnxruntime*.dylib*" \
+            -exec cp -P {} dist/snooze-macos-aarch64/lib/ \; 2>/dev/null || true
+
+          cp LICENSE README.md install.sh dist/snooze-macos-aarch64/
+          tar -C dist -czf snooze-macos-aarch64.tar.gz snooze-macos-aarch64
+          shasum -a 256 snooze-macos-aarch64.tar.gz > snooze-macos-aarch64.tar.gz.sha256
+
+      - name: Smoke test packaged binary
+        run: |
+          ./dist/snooze-macos-aarch64/bin/snooze --version
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snooze-macos-aarch64
+          path: |
+            snooze-macos-aarch64.tar.gz
+            snooze-macos-aarch64.tar.gz.sha256
 
   build-windows:
     name: Build (snooze-windows-x86_64)
@@ -155,7 +193,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: [build-unix, build-windows]
+    needs: [build-linux, build-macos, build-windows]
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
     runs-on: ubuntu-latest
     steps:
