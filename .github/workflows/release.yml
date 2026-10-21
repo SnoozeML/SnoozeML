@@ -27,16 +27,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Standard builds (all backends, all streams, and hardware accelerators)
           - os: ubuntu-22.04
             container: quay.io/pypa/manylinux_2_28_x86_64
             target: x86_64-unknown-linux-gnu
             artifact_name: snooze-linux-x86_64
-            features: "streams-all"
+            features: "streams-all,cuda,tensorrt"
             rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
           - os: ubuntu-22.04-arm
             container: quay.io/pypa/manylinux_2_28_aarch64
             target: aarch64-unknown-linux-gnu
             artifact_name: snooze-linux-aarch64
+            features: "streams-all,cuda,tensorrt"
+            rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
+
+          # Lightweight CPU-only builds (all backends and all streams, CPU execution only)
+          - os: ubuntu-22.04
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            target: x86_64-unknown-linux-gnu
+            artifact_name: snooze-linux-x86_64-cpu
+            features: "streams-all"
+            rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
+          - os: ubuntu-22.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
+            target: aarch64-unknown-linux-gnu
+            artifact_name: snooze-linux-aarch64-cpu
             features: "streams-all"
             rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
 
@@ -92,8 +107,16 @@ jobs:
             ${{ matrix.artifact_name }}.tar.gz.sha256
 
   build-macos:
-    name: Build (snooze-macos-aarch64)
+    name: Build (${{ matrix.artifact_name }})
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact_name: snooze-macos-aarch64
+            features: "streams-all,coreml"
+          - artifact_name: snooze-macos-aarch64-cpu
+            features: "streams-all"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -106,44 +129,52 @@ jobs:
       - name: Rust Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: aarch64-apple-darwin-streams-all-coreml
+          key: aarch64-apple-darwin-${{ matrix.features }}
 
       - name: Build release binary
         env:
           RUSTFLAGS: "-C link-arg=-Wl,-rpath,@executable_path/../lib -C link-arg=-Wl,-rpath,@executable_path"
         run: |
-          cargo build --release --bin snooze --target aarch64-apple-darwin --features "streams-all,coreml"
+          cargo build --release --bin snooze --target aarch64-apple-darwin --features "${{ matrix.features }}"
 
       - name: Package tarball and SHA-256 checksum
         run: |
-          mkdir -p dist/snooze-macos-aarch64/bin dist/snooze-macos-aarch64/lib
-          cp target/aarch64-apple-darwin/release/snooze dist/snooze-macos-aarch64/bin/snooze
-          strip dist/snooze-macos-aarch64/bin/snooze || true
+          mkdir -p dist/${{ matrix.artifact_name }}/bin dist/${{ matrix.artifact_name }}/lib
+          cp target/aarch64-apple-darwin/release/snooze dist/${{ matrix.artifact_name }}/bin/snooze
+          strip dist/${{ matrix.artifact_name }}/bin/snooze || true
 
           # Bundle any ONNX Runtime shared libraries downloaded by ort during build
           find target/aarch64-apple-darwin/release -maxdepth 4 \
             -name "libonnxruntime*.dylib*" \
-            -exec cp -P {} dist/snooze-macos-aarch64/lib/ \; 2>/dev/null || true
+            -exec cp -P {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
 
-          cp LICENSE README.md install.sh dist/snooze-macos-aarch64/
-          tar -C dist -czf snooze-macos-aarch64.tar.gz snooze-macos-aarch64
-          shasum -a 256 snooze-macos-aarch64.tar.gz > snooze-macos-aarch64.tar.gz.sha256
+          cp LICENSE README.md install.sh dist/${{ matrix.artifact_name }}/
+          tar -C dist -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}
+          shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
 
       - name: Smoke test packaged binary
         run: |
-          ./dist/snooze-macos-aarch64/bin/snooze --version
+          ./dist/${{ matrix.artifact_name }}/bin/snooze --version
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: snooze-macos-aarch64
+          name: ${{ matrix.artifact_name }}
           path: |
-            snooze-macos-aarch64.tar.gz
-            snooze-macos-aarch64.tar.gz.sha256
+            ${{ matrix.artifact_name }}.tar.gz
+            ${{ matrix.artifact_name }}.tar.gz.sha256
 
   build-windows:
-    name: Build (snooze-windows-x86_64)
+    name: Build (${{ matrix.artifact_name }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact_name: snooze-windows-x86_64
+            features: "streams-all,cuda,tensorrt"
+          - artifact_name: snooze-windows-x86_64-cpu
+            features: "streams-all"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -156,40 +187,40 @@ jobs:
       - name: Rust Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: x86_64-pc-windows-msvc-streams-all
+          key: x86_64-pc-windows-msvc-${{ matrix.features }}
 
       - name: Build release binary
         run: |
-          cargo build --release --bin snooze --target x86_64-pc-windows-msvc --features "streams-all"
+          cargo build --release --bin snooze --target x86_64-pc-windows-msvc --features "${{ matrix.features }}"
 
       - name: Package zip archive and SHA-256 checksum
         shell: pwsh
         run: |
-          $pkgDir = "dist/snooze-windows-x86_64/bin"
+          $pkgDir = "dist/${{ matrix.artifact_name }}/bin"
           New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
           Copy-Item "target/x86_64-pc-windows-msvc/release/snooze.exe" -Destination "$pkgDir/snooze.exe"
 
           Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release" -Recurse -Filter "*onnxruntime*.dll" -ErrorAction SilentlyContinue |
             ForEach-Object { Copy-Item $_.FullName -Destination $pkgDir -Force }
 
-          Copy-Item "LICENSE", "README.md", "install.ps1" -Destination "dist/snooze-windows-x86_64/"
-          Compress-Archive -Path "dist/snooze-windows-x86_64/*" -DestinationPath "snooze-windows-x86_64.zip" -Force
+          Copy-Item "LICENSE", "README.md", "install.ps1" -Destination "dist/${{ matrix.artifact_name }}/"
+          Compress-Archive -Path "dist/${{ matrix.artifact_name }}/*" -DestinationPath "${{ matrix.artifact_name }}.zip" -Force
 
-          $hash = (Get-FileHash -Path "snooze-windows-x86_64.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  snooze-windows-x86_64.zip" | Out-File -FilePath "snooze-windows-x86_64.zip.sha256" -Encoding ascii -NoNewline
+          $hash = (Get-FileHash -Path "${{ matrix.artifact_name }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.artifact_name }}.zip" | Out-File -FilePath "${{ matrix.artifact_name }}.zip.sha256" -Encoding ascii -NoNewline
 
       - name: Smoke test packaged binary
         shell: pwsh
         run: |
-          ./dist/snooze-windows-x86_64/bin/snooze.exe --version
+          ./dist/${{ matrix.artifact_name }}/bin/snooze.exe --version
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: snooze-windows-x86_64
+          name: ${{ matrix.artifact_name }}
           path: |
-            snooze-windows-x86_64.zip
-            snooze-windows-x86_64.zip.sha256
+            ${{ matrix.artifact_name }}.zip
+            ${{ matrix.artifact_name }}.zip.sha256
 
   publish-release:
     name: Publish GitHub Release
