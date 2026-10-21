@@ -1,15 +1,17 @@
 # SnoozeML Zero-Admin Installer for Windows (PowerShell)
 # Usage:
 #   irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
+#   $env:SNOOZE_VARIANT="cpu"; irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
 $Repo = if ($env:SNOOZE_REPO) { $env:SNOOZE_REPO } else { "SnoozeML/SnoozeML" }
 $Version = if ($env:SNOOZE_VERSION) { $env:SNOOZE_VERSION } else { "latest" }
+$Variant = if ($env:SNOOZE_VARIANT) { $env:SNOOZE_VARIANT.ToLower() } else { "standard" }
 $InstallRoot = if ($env:SNOOZE_INSTALL_DIR) { $env:SNOOZE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\SnoozeML" }
 $BinDir = Join-Path $InstallRoot "bin"
 $ModelsDir = if ($env:SNOOZE_MODELS_DIR) { $env:SNOOZE_MODELS_DIR } else { Join-Path $InstallRoot "models" }
-$ArtifactName = "snooze-windows-x86_64"
+$ArtifactName = if ($Variant -eq "cpu") { "snooze-windows-x86_64-cpu" } else { "snooze-windows-x86_64" }
 
 if ($Version -eq "latest") {
     $BaseUrl = "https://github.com/$Repo/releases/latest/download"

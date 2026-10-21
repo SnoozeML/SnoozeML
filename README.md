@@ -57,17 +57,23 @@ Get a Hugging Face embedding model (`BAAI/bge-small-en-v1.5`) running end-to-end
 
 **Linux & macOS (Zero `sudo` Required):**
 ```bash
+# Standard build (all backends, all streams, and CUDA/TensorRT/CoreML GPU support)
 curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh
 
+# Lightweight CPU-only build (smaller download, no GPU provider libraries)
+curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --cpu
 ```
 
-*Installs `snooze` and bundled ONNX Runtime into `~/.local/bin`, initializes `~/.local/share/snoozeml/models`, and registers a rootless background service (`-- --no-service` to skip, `-- --uninstall` to remove).*
+*Installs `snooze` and bundled ONNX Runtime into `~/.local/bin`, initializes `~/.local/share/snoozeml/models`, and registers a rootless background service (`-- --cpu` for CPU-only variant, `-- --no-service` to skip daemon, `-- --uninstall` to remove).*
 
 **Windows (PowerShell):**
 
 ```powershell
+# Standard build (includes CUDA/TensorRT GPU support)
 irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
 
+# Lightweight CPU-only build
+$env:SNOOZE_VARIANT="cpu"; irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
 ```
 
 **From Source:** (Rust 1.75+):

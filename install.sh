@@ -2,6 +2,7 @@
 # SnoozeML Zero-Sudo Installer for Linux & macOS
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --cpu
 #   curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --no-service
 #   curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --uninstall
 
@@ -9,6 +10,7 @@ set -eu
 
 REPO="${SNOOZE_REPO:-SnoozeML/SnoozeML}"
 VERSION="${SNOOZE_VERSION:-latest}"
+VARIANT="${SNOOZE_VARIANT:-standard}"
 INSTALL_ROOT="${SNOOZE_INSTALL_DIR:-$HOME/.local/share/snoozeml}"
 BIN_DIR="${SNOOZE_BIN_DIR:-$HOME/.local/bin}"
 MODELS_DIR="${SNOOZE_MODELS_DIR:-$INSTALL_ROOT/models}"
@@ -58,6 +60,7 @@ Usage:
 
 Options:
   --version <TAG>       Install a specific release tag (e.g. v0.1.0, default: latest)
+  --cpu                 Install the lightweight CPU-only variant (*-cpu)
   --install-dir <DIR>   Installation directory (default: ~/.local/share/snoozeml)
   --bin-dir <DIR>       Symlink binary directory (default: ~/.local/bin)
   --models-dir <DIR>    Default models directory (default: ~/.local/share/snoozeml/models)
@@ -73,6 +76,10 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || error "--version requires a value"
             VERSION="$2"
             shift 2
+            ;;
+        --cpu)
+            VARIANT="cpu"
+            shift
             ;;
         --install-dir)
             [ $# -ge 2 ] || error "--install-dir requires a value"
@@ -174,7 +181,11 @@ detect_platform() {
         error "Prebuilt macOS binaries target Apple Silicon (aarch64). On Intel Macs, install via: cargo install --git https://github.com/$REPO"
     fi
 
-    ARTIFACT_NAME="snooze-${PLATFORM_OS}-${PLATFORM_ARCH}"
+    if [ "$VARIANT" = "cpu" ]; then
+        ARTIFACT_NAME="snooze-${PLATFORM_OS}-${PLATFORM_ARCH}-cpu"
+    else
+        ARTIFACT_NAME="snooze-${PLATFORM_OS}-${PLATFORM_ARCH}"
+    fi
 }
 
 download_file() {

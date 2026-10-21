@@ -28,6 +28,9 @@ curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh |
 You can customize the installation by passing flags after `sh -s --`:
 
 ```bash
+# Install the lightweight CPU-only variant (~10x smaller download, no GPU provider libraries)
+curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --cpu
+
 # Install binary only without creating or starting the background daemon
 curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --no-service
 
@@ -43,7 +46,11 @@ curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh |
 On Windows (`x86_64`), run the PowerShell installer (no Administrator privileges required):
 
 ```powershell
+# Standard build (includes CUDA/TensorRT GPU support)
 irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
+
+# Lightweight CPU-only build
+$env:SNOOZE_VARIANT="cpu"; irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
 ```
 
 This extracts `snooze.exe` and bundled ONNX Runtime DLLs into `%LOCALAPPDATA%\Programs\SnoozeML\bin`, initializes `%LOCALAPPDATA%\Programs\SnoozeML\models`, and adds the binary directory to your user `PATH`.
