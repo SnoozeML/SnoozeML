@@ -294,6 +294,13 @@ SnoozeML is actively evolving. The following initiatives represent planned archi
 
 ---
 
+## Platform Compatibility
+
+> [!NOTE]
+> **RHEL 8 & Legacy `glibc` Notice:** Prebuilt Linux release binaries are linked against `ort-sys` prebuilt archives requiring `glibc >= 2.38` (e.g., Ubuntu 24.04+, Fedora 39+, Debian 13+). **RHEL 8 (`glibc 2.28`) is not supported by prebuilt binaries for the moment**—on RHEL 8 or older distributions, please either deploy via the official Docker images or build from source without prebuilt ONNX Runtime static binaries (e.g., `cargo build --release --no-default-features --features candle-backend,tree-backend,worker-backend,streams-all` or linking a system `libonnxruntime`).
+
+---
+
 ## Acknowledgements
 
 SnoozeML builds upon outstanding projects in the Rust and Machine Learning ecosystems:

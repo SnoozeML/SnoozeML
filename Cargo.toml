@@ -1,6 +1,6 @@
 [package]
 name = "snooze-ml"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Federico Argilli"]
 description = "A high-performance Rust ONNX and multi-format inference daemon with dynamic micro-batching and scale-to-zero capabilities."
