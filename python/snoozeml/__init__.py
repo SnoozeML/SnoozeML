@@ -1,5 +1,24 @@
 """Official Python SDK and ML conversion toolkit for the SnoozeML inference daemon."""
 
+from .auth import (
+    JwtAlgorithm,
+    Role,
+    create_jwt_token,
+    decode_jwt_token,
+    mint_jwt_token,
+)
+from .config import (
+    ApiKeyEntry,
+    AuthSettings,
+    GlobalDefaultsConfig,
+    JwtSettings,
+    ModelConfigEntry,
+    SnoozeConfig,
+    SnoozeDaemon,
+    StreamBinding,
+    find_snooze_binary,
+    scaffold_worker,
+)
 from .exceptions import (
     AuthenticationError,
     ConversionError,
@@ -22,7 +41,9 @@ from .inference import (
     TensorDataType,
     TensorInput,
     TensorOutput,
+    concat_inference_responses,
     normalize_inputs,
+    slice_inputs_batch,
 )
 from .logging import (
     RedactingFilter,
@@ -31,7 +52,15 @@ from .logging import (
     get_logger,
     mask_secret,
 )
+from .metrics import DaemonMetrics, parse_prometheus_metrics
 from .models import AsyncModelsManager, ModelInfo, ModelsManager, ModelState
+from .streams import (
+    MockStreamClient,
+    RedisStreamClient,
+    StreamInferRequest,
+    StreamInferResponse,
+    StreamWireFormat,
+)
 from .worker import RawTensor, SnoozeModel, WorkerError
 from .client import AsyncSnoozeClient, SnoozeClient
 
@@ -52,6 +81,28 @@ __all__ = [
     "AsyncSnoozeClient",
     "Client",
     "AsyncClient",
+    "Role",
+    "JwtAlgorithm",
+    "create_jwt_token",
+    "mint_jwt_token",
+    "decode_jwt_token",
+    "SnoozeConfig",
+    "GlobalDefaultsConfig",
+    "ModelConfigEntry",
+    "StreamBinding",
+    "ApiKeyEntry",
+    "JwtSettings",
+    "AuthSettings",
+    "SnoozeDaemon",
+    "find_snooze_binary",
+    "scaffold_worker",
+    "DaemonMetrics",
+    "parse_prometheus_metrics",
+    "StreamWireFormat",
+    "StreamInferRequest",
+    "StreamInferResponse",
+    "MockStreamClient",
+    "RedisStreamClient",
     "ModelInfo",
     "ModelState",
     "ModelsManager",
@@ -62,6 +113,8 @@ __all__ = [
     "TensorOutput",
     "TensorDataType",
     "normalize_inputs",
+    "slice_inputs_batch",
+    "concat_inference_responses",
     "SnoozeError",
     "ModelNotFoundError",
     "InvalidInputError",

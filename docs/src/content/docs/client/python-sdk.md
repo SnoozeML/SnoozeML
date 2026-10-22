@@ -168,7 +168,137 @@ export_xgboost(clf, output_path="models/xgb_classifier.xgb.json")
 
 ---
 
-## 4. Structured Logging & Credential Redaction
+## 4. One-Step Model Deployment & Overwrite
+
+Export and upload a trained model directly from memory in a single call, or overwrite an existing model registration with `overwrite=True`:
+
+```python
+# One-step export + upload + optional eager load
+info = client.deploy_sklearn(
+    model=pipe,
+    sample_input=X[:5],
+    model_id="iris_rf",
+    overwrite=True,
+    load=True,
+    pinned=True,
+)
+
+# Wait until a model finishes loading weights into memory
+client.models.wait_for_ready("iris_rf", timeout=30.0, trigger_load=True)
+```
+
+---
+
+## 5. Dataset Batch Chunking, Retries & PyTorch Tensors
+
+Pass PyTorch tensors directly (automatically detached and moved to CPU), convert outputs via `.get_torch()`, chunk large datasets along `Axis(0)` with `infer_dataset()`, and automatically retry transient `503` responses (`ModelLoadingError` / `ResourceExhaustedError` respecting `Retry-After`):
+
+```python
+import torch
+from snoozeml import SnoozeClient
+
+client = SnoozeClient("http://localhost:8080", max_retries=3, retry_backoff=0.25)
+client.wait_until_ready(timeout=15.0)
+
+# Direct PyTorch tensor input & output conversion
+x_tensor = torch.randn(4, 16, requires_grad=True)
+resp = client.infer("mlp_net", {"input": x_tensor}, retries=3)
+out_tensor = resp.get_torch("output", device="cpu")
+
+# Chunk a large dataset along Axis(0) and concatenate responses automatically
+large_batch = {"input": torch.randn(1024, 16)}
+merged_resp = client.infer_dataset("mlp_net", large_batch, batch_size=64)
+print(merged_resp.get_numpy("output").shape)  # (1024, ...)
+```
+
+---
+
+## 6. JWT Minting & Verification (`snoozeml.auth`)
+
+Mint and verify RFC 7519 HMAC JSON Web Tokens (`HS256`, `HS384`, `HS512`) matching SnoozeML's 3-tier RBAC hierarchy (`Role.READ_ONLY`, `Role.INFERENCE`, `Role.ADMIN`) without external dependencies:
+
+```python
+from snoozeml import Role, SnoozeClient, create_jwt_token, decode_jwt_token
+
+token = create_jwt_token(
+    secret="my-cluster-hmac-secret",
+    subject="scoring-worker-01",
+    role=Role.INFERENCE,
+    expires_in_secs=3600,
+    issuer="snooze-control-plane",
+    algorithm="HS256",
+)
+
+# Verify and inspect claims locally
+claims = decode_jwt_token(token, secret="my-cluster-hmac-secret", issuer="snooze-control-plane")
+
+# Authenticate client requests using the minted JWT
+authed_client = SnoozeClient("http://localhost:8080", token=token)
+```
+
+---
+
+## 7. Event Streaming Envelopes & Clients (`snoozeml.streams`)
+
+Build, serialize, and consume streaming inference envelopes (`JSON` or `Protobuf`) compatible with SnoozeML's Kafka, RabbitMQ, Redis Streams, and Mock stream drivers:
+
+```python
+from snoozeml import MockStreamClient, RedisStreamClient, StreamInferRequest, StreamWireFormat
+
+# 1. Local in-memory stream pipeline testing
+mock_stream = MockStreamClient(client=client, default_model_id="iris_rf")
+resp = mock_stream.infer({"input": [[5.1, 3.5, 1.4, 0.2]]})
+
+# 2. Live Redis Streams producer / consumer (XADD & XREAD)
+redis_stream = RedisStreamClient(
+    endpoint="redis://127.0.0.1:6379",
+    input_topic="snooze.requests",
+    output_topic="snooze.responses",
+    default_model_id="iris_rf",
+    format=StreamWireFormat.JSON,
+)
+result = redis_stream.infer({"input": [[5.1, 3.5, 1.4, 0.2]]}, timeout=5.0)
+```
+
+---
+
+## 8. Programmatic Configuration, Stream Setup & Worker Scaffolding (`snoozeml.config`)
+
+Generate `models.toml` / `models.json` files (including `[[streams]]` and `[auth]`), scaffold custom process-isolated Python worker models (`snooze_model.py` + `snooze_model.json`), and launch a local `snooze serve` daemon subprocess directly from Python:
+
+```python
+from snoozeml import GlobalDefaultsConfig, SnoozeConfig, SnoozeDaemon, scaffold_worker
+
+# 1. Scaffold and smoke-test a custom Python worker directory
+scaffold_worker("models/custom_forecaster", tensor_format="numpy", verify=True)
+
+# 2. Build models.toml programmatically with models, streams, and RBAC auth
+cfg = (
+    SnoozeConfig(defaults=GlobalDefaultsConfig(max_loaded_models=8))
+    .add_model("iris_rf", "iris_rf.onnx", pinned=True, max_batch_size=32)
+    .add_stream(
+        name="redis-ingest",
+        broker="redis",
+        endpoint="redis://127.0.0.1:6379",
+        input_topic="snooze.requests",
+        output_topic="snooze.responses",
+        error_topic="snooze.dlq",
+        model_id="iris_rf",
+    )
+    .add_api_key(role="admin", key_env="SNOOZE_ADMIN_KEY", name="ops-admin")
+    .set_jwt(secret_env="SNOOZE_JWT_SECRET", algorithm="HS256")
+)
+cfg.save("models/models.toml")
+
+# 3. Manage a local snooze daemon subprocess as a context manager
+with SnoozeDaemon(models_dir="models", port=8080) as daemon_client:
+    metrics = daemon_client.get_metrics()
+    print(f"Success rate: {metrics.success_rate:.1%}, Avg latency: {metrics.average_latency_ms:.2f} ms")
+```
+
+---
+
+## 9. Structured Logging & Credential Redaction
 
 Configure human-readable key-value or JSON structured logs with automatic `Bearer` token and `X-API-Key` redaction:
 
@@ -180,6 +310,6 @@ configure_logging(level="INFO", format_json=False)
 
 ---
 
-## 5. Interactive Notebooks & End-to-End Examples
+## 10. Interactive Notebooks & End-to-End Examples
 
 For runnable tutorials covering Scikit-Learn pipelines, XGBoost classification, Chronos-Bolt probabilistic forecasting, and real-time Kafka event streaming, explore the [Interactive Examples Guide](/SnoozeML/getting-started/examples/) or inspect the `examples/` directory in the repository.

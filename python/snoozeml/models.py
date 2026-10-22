@@ -6,9 +6,11 @@ import asyncio
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Union
+import tempfile
+import time
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
-from .exceptions import ModelNotFoundError
+from .exceptions import InferenceTimeoutError, ModelNotFoundError
 from .logging import get_logger
 
 if TYPE_CHECKING:
@@ -289,6 +291,7 @@ class ModelsManager:
         model_id: Optional[str] = None,
         description: Optional[str] = None,
         pinned: bool = False,
+        overwrite: bool = False,
         max_batch_size: Optional[int] = None,
         max_batch_delay_ms: Optional[int] = None,
         idle_timeout_secs: Optional[int] = None,
@@ -301,7 +304,7 @@ class ModelsManager:
         """Uploads a model file directly to the SnoozeML daemon via HTTP.
 
         Supports passing custom runtime configuration (pinned memory, replica limits,
-        batch sizes, idle timeouts) without needing to mount local filesystem volumes.
+        batch sizes, idle timeouts, overwrite) without needing to mount local filesystem volumes.
 
         Args:
             file: Filesystem path (str or Path), raw bytes, or readable binary stream.
@@ -309,6 +312,7 @@ class ModelsManager:
             model_id: Optional unique identifier for the model (defaults to file stem).
             description: Optional custom human-readable description.
             pinned: If True, eagerly loads model into memory and exempts it from scale-to-zero.
+            overwrite: If True, replaces an existing model weight file on the server if present.
             max_batch_size: Maximum batch size for dynamic Axis(0) micro-batching.
             max_batch_delay_ms: Maximum latency budget in ms before executing micro-batch.
             idle_timeout_secs: Inactivity threshold in seconds before scale-to-zero unload.
@@ -343,6 +347,8 @@ class ModelsManager:
             data["description"] = str(description)
         if pinned:
             data["pinned"] = "true"
+        if overwrite:
+            data["overwrite"] = "true"
         if max_batch_size is not None:
             data["max_batch_size"] = str(max_batch_size)
         if max_batch_delay_ms is not None:
@@ -367,12 +373,196 @@ class ModelsManager:
                 "model_id": model_id,
                 "size_bytes": len(content),
                 "pinned": pinned,
+                "overwrite": overwrite,
             },
         )
         resp = self._client._request_multipart("/v1/models/upload", files=files, data=data, model_id=model_id)
         model_meta = ModelInfo.from_dict(resp.json())
         logger.info("Successfully uploaded and registered model", extra={"model_id": model_meta.id})
         return model_meta
+
+    def wait_for_ready(
+        self,
+        model_id: str,
+        *,
+        timeout: float = 30.0,
+        poll_interval: float = 0.2,
+        trigger_load: bool = False,
+    ) -> ModelInfo:
+        """Polls model metadata until the model reaches a loaded state (:attr:`ModelState.READY` or :attr:`ModelState.BUSY`).
+
+        Args:
+            model_id: Target model identifier.
+            timeout: Maximum time in seconds to wait before raising :class:`InferenceTimeoutError`.
+            poll_interval: Interval in seconds between status polls.
+            trigger_load: If ``True`` and the model is currently ``idle``, triggers :meth:`load` first.
+
+        Returns:
+            Loaded :class:`ModelInfo` instance.
+        """
+        if trigger_load:
+            info = self.get(model_id)
+            if not info.is_loaded:
+                self.load(model_id)
+
+        deadline = time.monotonic() + float(timeout)
+        while True:
+            info = self.get(model_id)
+            if info.is_loaded:
+                return info
+            if time.monotonic() >= deadline:
+                raise InferenceTimeoutError(
+                    f"Timed out waiting {timeout}s for model '{model_id}' to become ready (current state: {info.state.value})",
+                    status_code=504,
+                    model_id=model_id,
+                )
+            time.sleep(max(0.01, float(poll_interval)))
+
+    def deploy_sklearn(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        initial_types: Optional[Sequence[Tuple[str, Any]]] = None,
+        sample_input: Optional[Any] = None,
+        input_name: str = "float_input",
+        output_name: str = "output",
+        opset_version: int = 17,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Converts a fitted scikit-learn estimator or ``Pipeline`` to ONNX and deploys it to SnoozeML in one call."""
+        from .converters.sklearn import export_sklearn
+
+        with tempfile.TemporaryDirectory(prefix="snoozeml_sklearn_") as tmpdir:
+            onnx_file = Path(tmpdir) / f"{model_id}.onnx"
+            export_sklearn(
+                model=model,
+                initial_types=initial_types,
+                output_path=onnx_file,
+                sample_input=sample_input,
+                input_name=input_name,
+                output_name=output_name,
+                opset_version=opset_version,
+            )
+            return self.upload(
+                file=onnx_file,
+                filename=f"{model_id}.onnx",
+                model_id=model_id,
+                description=description,
+                pinned=pinned,
+                overwrite=overwrite,
+                max_batch_size=max_batch_size,
+                max_batch_delay_ms=max_batch_delay_ms,
+                idle_timeout_secs=idle_timeout_secs,
+                min_residency_secs=min_residency_secs,
+                autoscale_queue_threshold=autoscale_queue_threshold,
+                max_replicas=max_replicas,
+                routing_strategy=routing_strategy,
+                device=device,
+            )
+
+    def deploy_torch(
+        self,
+        model: Any,
+        sample_input: Any,
+        *,
+        model_id: str,
+        input_names: Optional[Sequence[str]] = None,
+        output_names: Optional[Sequence[str]] = None,
+        dynamic_axes: Optional[Mapping[str, Mapping[int, str]]] = None,
+        opset_version: int = 17,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Exports a PyTorch ``nn.Module`` to ONNX and deploys it to SnoozeML in one call."""
+        from .converters.torch import export_torch
+
+        with tempfile.TemporaryDirectory(prefix="snoozeml_torch_") as tmpdir:
+            onnx_file = Path(tmpdir) / f"{model_id}.onnx"
+            export_torch(
+                model=model,
+                sample_input=sample_input,
+                output_path=onnx_file,
+                input_names=input_names,
+                output_names=output_names,
+                dynamic_axes=dynamic_axes,
+                opset_version=opset_version,
+            )
+            return self.upload(
+                file=onnx_file,
+                filename=f"{model_id}.onnx",
+                model_id=model_id,
+                description=description,
+                pinned=pinned,
+                overwrite=overwrite,
+                max_batch_size=max_batch_size,
+                max_batch_delay_ms=max_batch_delay_ms,
+                idle_timeout_secs=idle_timeout_secs,
+                min_residency_secs=min_residency_secs,
+                autoscale_queue_threshold=autoscale_queue_threshold,
+                max_replicas=max_replicas,
+                routing_strategy=routing_strategy,
+                device=device,
+            )
+
+    def deploy_xgboost(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Exports an XGBoost model to ``.xgb.json`` and deploys it to SnoozeML in one call."""
+        from .converters.xgboost import export_xgboost
+
+        with tempfile.TemporaryDirectory(prefix="snoozeml_xgb_") as tmpdir:
+            xgb_file = Path(tmpdir) / f"{model_id}.xgb.json"
+            export_xgboost(model=model, output_path=xgb_file)
+            return self.upload(
+                file=xgb_file,
+                filename=f"{model_id}.xgb.json",
+                model_id=model_id,
+                description=description,
+                pinned=pinned,
+                overwrite=overwrite,
+                max_batch_size=max_batch_size,
+                max_batch_delay_ms=max_batch_delay_ms,
+                idle_timeout_secs=idle_timeout_secs,
+                min_residency_secs=min_residency_secs,
+                autoscale_queue_threshold=autoscale_queue_threshold,
+                max_replicas=max_replicas,
+                routing_strategy=routing_strategy,
+                device=device,
+            )
 
 
 class AsyncModelsManager:
@@ -476,6 +666,7 @@ class AsyncModelsManager:
         model_id: Optional[str] = None,
         description: Optional[str] = None,
         pinned: bool = False,
+        overwrite: bool = False,
         max_batch_size: Optional[int] = None,
         max_batch_delay_ms: Optional[int] = None,
         idle_timeout_secs: Optional[int] = None,
@@ -488,7 +679,7 @@ class AsyncModelsManager:
         """Asynchronously uploads a model file directly to the daemon via HTTP.
 
         Supports passing custom runtime configuration (pinned memory, replica limits,
-        batch sizes, idle timeouts) without needing to mount local filesystem volumes.
+        batch sizes, idle timeouts, overwrite) without needing to mount local filesystem volumes.
 
         Args:
             file: Filesystem path (str or Path), raw bytes, or readable binary stream.
@@ -496,6 +687,7 @@ class AsyncModelsManager:
             model_id: Optional unique identifier for the model (defaults to file stem).
             description: Optional custom human-readable description.
             pinned: If True, eagerly loads model into memory and exempts it from scale-to-zero.
+            overwrite: If True, replaces an existing model weight file on the server if present.
             max_batch_size: Maximum batch size for dynamic Axis(0) micro-batching.
             max_batch_delay_ms: Maximum latency budget in ms before executing micro-batch.
             idle_timeout_secs: Inactivity threshold in seconds before scale-to-zero unload.
@@ -515,6 +707,159 @@ class AsyncModelsManager:
             model_id=model_id,
             description=description,
             pinned=pinned,
+            overwrite=overwrite,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    async def wait_for_ready(
+        self,
+        model_id: str,
+        *,
+        timeout: float = 30.0,
+        poll_interval: float = 0.2,
+        trigger_load: bool = False,
+    ) -> ModelInfo:
+        """Asynchronously polls model metadata until the model reaches a loaded state."""
+        if trigger_load:
+            info = await self.get(model_id)
+            if not info.is_loaded:
+                await self.load(model_id)
+
+        deadline = time.monotonic() + float(timeout)
+        while True:
+            info = await self.get(model_id)
+            if info.is_loaded:
+                return info
+            if time.monotonic() >= deadline:
+                raise InferenceTimeoutError(
+                    f"Timed out waiting {timeout}s for model '{model_id}' to become ready (current state: {info.state.value})",
+                    status_code=504,
+                    model_id=model_id,
+                )
+            await asyncio.sleep(max(0.01, float(poll_interval)))
+
+    async def deploy_sklearn(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        initial_types: Optional[Sequence[Tuple[str, Any]]] = None,
+        sample_input: Optional[Any] = None,
+        input_name: str = "float_input",
+        output_name: str = "output",
+        opset_version: int = 17,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Asynchronously converts a fitted scikit-learn estimator or ``Pipeline`` and deploys it."""
+        return await asyncio.to_thread(
+            self._client._sync_client.models.deploy_sklearn,
+            model,
+            model_id=model_id,
+            initial_types=initial_types,
+            sample_input=sample_input,
+            input_name=input_name,
+            output_name=output_name,
+            opset_version=opset_version,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    async def deploy_torch(
+        self,
+        model: Any,
+        sample_input: Any,
+        *,
+        model_id: str,
+        input_names: Optional[Sequence[str]] = None,
+        output_names: Optional[Sequence[str]] = None,
+        dynamic_axes: Optional[Mapping[str, Mapping[int, str]]] = None,
+        opset_version: int = 17,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Asynchronously exports a PyTorch ``nn.Module`` to ONNX and deploys it."""
+        return await asyncio.to_thread(
+            self._client._sync_client.models.deploy_torch,
+            model,
+            sample_input,
+            model_id=model_id,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=opset_version,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    async def deploy_xgboost(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Asynchronously exports an XGBoost model to ``.xgb.json`` and deploys it."""
+        return await asyncio.to_thread(
+            self._client._sync_client.models.deploy_xgboost,
+            model,
+            model_id=model_id,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
             max_batch_size=max_batch_size,
             max_batch_delay_ms=max_batch_delay_ms,
             idle_timeout_secs=idle_timeout_secs,

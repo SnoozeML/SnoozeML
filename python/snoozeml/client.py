@@ -30,6 +30,8 @@ import requests
 from .exceptions import (
     InferenceTimeoutError,
     InvalidInputError,
+    ModelLoadingError,
+    ResourceExhaustedError,
     SnoozeConnectionError,
     SnoozeError,
     map_grpc_error,
@@ -39,9 +41,12 @@ from .inference import (
     InferenceResponse,
     InputTypes,
     build_grpc_infer_request,
+    concat_inference_responses,
     normalize_inputs,
+    slice_inputs_batch,
 )
 from .logging import get_logger, mask_secret, register_secret_for_redaction
+from .metrics import DaemonMetrics
 from .models import AsyncModelsManager, ModelInfo, ModelsManager
 
 logger = get_logger("client")
@@ -180,6 +185,8 @@ class SnoozeClient:
         tls_ca_cert: Optional[Union[str, bytes, Path]] = None,
         verify_tls: bool = True,
         max_message_length: int = DEFAULT_MAX_MESSAGE_LENGTH,
+        max_retries: int = 0,
+        retry_backoff: float = 0.5,
     ) -> None:
         self.http_endpoint, self.grpc_endpoint, self.use_grpc = _resolve_endpoints(
             endpoint=endpoint,
@@ -196,6 +203,8 @@ class SnoozeClient:
         self.tls_ca_cert = tls_ca_cert
         self.verify_tls = verify_tls
         self.max_message_length = int(max_message_length)
+        self.max_retries = max(0, int(max_retries))
+        self.retry_backoff = max(0.01, float(retry_backoff))
 
         self._session = requests.Session()
         if isinstance(tls_ca_cert, (str, Path)) and "-----BEGIN CERTIFICATE-----" not in str(tls_ca_cert):
@@ -489,17 +498,20 @@ class SnoozeClient:
         timeout: Optional[float] = None,
         client_timeout_ms: Optional[int] = None,
         parameters: Optional[Mapping[str, str]] = None,
+        retries: Optional[int] = None,
     ) -> InferenceResponse:
         """Executes unary tensor inference against a registered model.
 
         Args:
             model_id: Target model identifier (e.g. ``"demo-model"``, ``"bert-base-uncased"``).
             inputs: Input tensors provided as a dictionary ``{name: np.ndarray}``, a list of
-                :class:`~snoozeml.inference.TensorInput` or dicts, or a single ``np.ndarray``.
+                :class:`~snoozeml.inference.TensorInput` or dicts, or a single ``np.ndarray`` / ``torch.Tensor``.
             use_grpc: Optional per-request transport override. If ``None``, uses :attr:`use_grpc`.
             timeout: Optional request timeout in seconds (defaults to :attr:`timeout`).
             client_timeout_ms: Optional gRPC deadline hint in milliseconds embedded in the request.
             parameters: Optional gRPC execution parameters / routing hints.
+            retries: Optional retry count for transient ``503`` (``ModelLoadingError`` / ``ResourceExhaustedError``).
+                Defaults to :attr:`max_retries`.
 
         Returns:
             :class:`~snoozeml.inference.InferenceResponse` containing output tensors and server latency.
@@ -515,20 +527,85 @@ class SnoozeClient:
 
         tensor_inputs = normalize_inputs(inputs)
         dispatch_grpc = self.use_grpc if use_grpc is None else bool(use_grpc)
+        max_attempts = max(0, self.max_retries if retries is None else int(retries))
 
-        if dispatch_grpc:
-            return self._infer_grpc(
+        attempt = 0
+        while True:
+            try:
+                if dispatch_grpc:
+                    return self._infer_grpc(
+                        model_id=model_id,
+                        tensors=tensor_inputs,
+                        timeout=timeout,
+                        client_timeout_ms=client_timeout_ms,
+                        parameters=parameters,
+                    )
+                return self._infer_rest(
+                    model_id=model_id,
+                    tensors=tensor_inputs,
+                    timeout=timeout,
+                )
+            except (ModelLoadingError, ResourceExhaustedError) as exc:
+                if attempt >= max_attempts:
+                    raise
+                delay = (
+                    float(exc.retry_after)
+                    if exc.retry_after is not None and exc.retry_after > 0
+                    else self.retry_backoff * (2 ** attempt)
+                )
+                attempt += 1
+                logger.info(
+                    "Retrying transient inference failure",
+                    extra={
+                        "model_id": model_id,
+                        "attempt": attempt,
+                        "max_retries": max_attempts,
+                        "delay_s": round(delay, 2),
+                    },
+                )
+                time.sleep(delay)
+
+    def infer_dataset(
+        self,
+        model_id: str,
+        inputs: InputTypes,
+        *,
+        batch_size: int = 32,
+        use_grpc: Optional[bool] = None,
+        timeout: Optional[float] = None,
+        client_timeout_ms: Optional[int] = None,
+        parameters: Optional[Mapping[str, str]] = None,
+        retries: Optional[int] = None,
+    ) -> InferenceResponse:
+        """Slices a large dataset along ``Axis(0)`` into chunks of ``batch_size``, executes inference, and concatenates outputs.
+
+        Args:
+            model_id: Target model identifier.
+            inputs: Dataset tensor inputs sharing the same leading ``Axis(0)`` length.
+            batch_size: Maximum number of rows per micro-batch request (default ``32``).
+            use_grpc: Optional per-request transport override.
+            timeout: Optional per-chunk timeout in seconds.
+            client_timeout_ms: Optional gRPC deadline hint in milliseconds.
+            parameters: Optional gRPC execution parameters.
+            retries: Optional per-chunk retry count on transient ``503`` responses.
+
+        Returns:
+            Combined :class:`~snoozeml.inference.InferenceResponse` with outputs concatenated along ``Axis(0)``.
+        """
+        chunks = slice_inputs_batch(inputs, batch_size=batch_size)
+        responses: List[InferenceResponse] = []
+        for chunk in chunks:
+            resp = self.infer(
                 model_id=model_id,
-                tensors=tensor_inputs,
+                inputs=chunk,
+                use_grpc=use_grpc,
                 timeout=timeout,
                 client_timeout_ms=client_timeout_ms,
                 parameters=parameters,
+                retries=retries,
             )
-        return self._infer_rest(
-            model_id=model_id,
-            tensors=tensor_inputs,
-            timeout=timeout,
-        )
+            responses.append(resp)
+        return concat_inference_responses(responses)
 
     def _infer_rest(
         self,
@@ -663,6 +740,26 @@ class SnoozeClient:
         data = self._request_json("GET", "/health/ready")
         return isinstance(data, Mapping) and data.get("status") == "ready"
 
+    def wait_until_ready(
+        self,
+        *,
+        timeout: float = 30.0,
+        poll_interval: float = 0.2,
+    ) -> bool:
+        """Polls ``/health/ready`` until the SnoozeML daemon responds ready or ``timeout`` expires."""
+        deadline = time.monotonic() + float(timeout)
+        while True:
+            try:
+                if self.health_ready():
+                    return True
+            except Exception:
+                pass
+            if time.monotonic() >= deadline:
+                raise SnoozeConnectionError(
+                    f"Timed out waiting {timeout}s for SnoozeML server at {self.http_endpoint} to become ready"
+                )
+            time.sleep(max(0.01, float(poll_interval)))
+
     def grpc_health(self, service: str = "") -> bool:
         """Checks the gRPC standard health check service (``grpc.health.v1.Health/Check``).
 
@@ -691,6 +788,10 @@ class SnoozeClient:
         resp = self._request_raw("GET", "/metrics")
         return resp.text
 
+    def get_metrics(self) -> DaemonMetrics:
+        """Retrieves and parses Prometheus metrics from ``GET /metrics`` into a :class:`~snoozeml.metrics.DaemonMetrics` object."""
+        return DaemonMetrics.from_prometheus(self.metrics())
+
     def upload_model(
         self,
         file: Union[str, Path, bytes, Any],
@@ -699,6 +800,7 @@ class SnoozeClient:
         model_id: Optional[str] = None,
         description: Optional[str] = None,
         pinned: bool = False,
+        overwrite: bool = False,
         max_batch_size: Optional[int] = None,
         max_batch_delay_ms: Optional[int] = None,
         idle_timeout_secs: Optional[int] = None,
@@ -718,6 +820,129 @@ class SnoozeClient:
             model_id=model_id,
             description=description,
             pinned=pinned,
+            overwrite=overwrite,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    def deploy_sklearn(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        initial_types: Optional[Any] = None,
+        sample_input: Optional[Any] = None,
+        input_name: str = "float_input",
+        output_name: str = "output",
+        opset_version: int = 17,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Converts a fitted scikit-learn model to ONNX and deploys it to SnoozeML in one call."""
+        return self.models.deploy_sklearn(
+            model=model,
+            model_id=model_id,
+            initial_types=initial_types,
+            sample_input=sample_input,
+            input_name=input_name,
+            output_name=output_name,
+            opset_version=opset_version,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    def deploy_torch(
+        self,
+        model: Any,
+        sample_input: Any,
+        *,
+        model_id: str,
+        input_names: Optional[Any] = None,
+        output_names: Optional[Any] = None,
+        dynamic_axes: Optional[Mapping[str, Mapping[int, str]]] = None,
+        opset_version: int = 17,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Exports a PyTorch ``nn.Module`` to ONNX and deploys it to SnoozeML in one call."""
+        return self.models.deploy_torch(
+            model=model,
+            sample_input=sample_input,
+            model_id=model_id,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=opset_version,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    def deploy_xgboost(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Exports an XGBoost model to ``.xgb.json`` and deploys it to SnoozeML in one call."""
+        return self.models.deploy_xgboost(
+            model=model,
+            model_id=model_id,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
             max_batch_size=max_batch_size,
             max_batch_delay_ms=max_batch_delay_ms,
             idle_timeout_secs=idle_timeout_secs,
@@ -764,6 +989,8 @@ class AsyncSnoozeClient:
         tls_ca_cert: Optional[Union[str, bytes, Path]] = None,
         verify_tls: bool = True,
         max_message_length: int = DEFAULT_MAX_MESSAGE_LENGTH,
+        max_retries: int = 0,
+        retry_backoff: float = 0.5,
     ) -> None:
         self._sync_client = SnoozeClient(
             endpoint=endpoint,
@@ -776,6 +1003,8 @@ class AsyncSnoozeClient:
             tls_ca_cert=tls_ca_cert,
             verify_tls=verify_tls,
             max_message_length=max_message_length,
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
         )
         self.http_endpoint = self._sync_client.http_endpoint
         self.grpc_endpoint = self._sync_client.grpc_endpoint
@@ -784,6 +1013,8 @@ class AsyncSnoozeClient:
         self.tls_ca_cert = tls_ca_cert
         self.verify_tls = verify_tls
         self.max_message_length = self._sync_client.max_message_length
+        self.max_retries = self._sync_client.max_retries
+        self.retry_backoff = self._sync_client.retry_backoff
 
         self._aio_channel: Optional[grpc.aio.Channel] = None
         self._aio_infer_stub: Optional[InferenceServiceStub] = None
@@ -882,6 +1113,7 @@ class AsyncSnoozeClient:
         timeout: Optional[float] = None,
         client_timeout_ms: Optional[int] = None,
         parameters: Optional[Mapping[str, str]] = None,
+        retries: Optional[int] = None,
     ) -> InferenceResponse:
         """Asynchronously executes unary tensor inference against a registered model."""
         if not model_id or not str(model_id).strip():
@@ -890,57 +1122,103 @@ class AsyncSnoozeClient:
 
         tensor_inputs = normalize_inputs(inputs)
         dispatch_grpc = self.use_grpc if use_grpc is None else bool(use_grpc)
+        max_attempts = max(0, self.max_retries if retries is None else int(retries))
 
-        if dispatch_grpc:
-            infer_stub, _ = self._ensure_aio_grpc_stubs()
-            req = build_grpc_infer_request(
-                model_id=model_id,
-                tensors=tensor_inputs,
-                client_timeout_ms=client_timeout_ms,
-                parameters=parameters,
-            )
-            req_timeout = timeout if timeout is not None else self.timeout
-            metadata = self._sync_client._grpc_metadata()
-
-            t0 = time.perf_counter()
+        attempt = 0
+        while True:
             try:
-                proto_resp = await infer_stub.Infer(
-                    req,
-                    timeout=req_timeout,
-                    metadata=metadata,
-                )
-            except _GrpcRpcError as exc:
-                mapped = map_grpc_error(exc, model_id=model_id)
-                logger.warning(
-                    "Async gRPC inference failed",
-                    extra={
-                        "model_id": model_id,
-                        "transport": "grpc",
-                        "grpc_code": mapped.grpc_code,
-                        "error": mapped.message,
-                    },
-                )
-                raise mapped from exc
+                if dispatch_grpc:
+                    infer_stub, _ = self._ensure_aio_grpc_stubs()
+                    req = build_grpc_infer_request(
+                        model_id=model_id,
+                        tensors=tensor_inputs,
+                        client_timeout_ms=client_timeout_ms,
+                        parameters=parameters,
+                    )
+                    req_timeout = timeout if timeout is not None else self.timeout
+                    metadata = self._sync_client._grpc_metadata()
 
-            client_ms = (time.perf_counter() - t0) * 1000.0
-            response = InferenceResponse.from_proto(proto_resp)
-            logger.debug(
-                "Completed async gRPC inference",
-                extra={
-                    "model_id": model_id,
-                    "transport": "grpc",
-                    "server_duration_ms": round(response.duration_ms, 3),
-                    "client_latency_ms": round(client_ms, 3),
-                },
-            )
-            return response
+                    t0 = time.perf_counter()
+                    try:
+                        proto_resp = await infer_stub.Infer(
+                            req,
+                            timeout=req_timeout,
+                            metadata=metadata,
+                        )
+                    except _GrpcRpcError as exc:
+                        mapped = map_grpc_error(exc, model_id=model_id)
+                        logger.warning(
+                            "Async gRPC inference failed",
+                            extra={
+                                "model_id": model_id,
+                                "transport": "grpc",
+                                "grpc_code": mapped.grpc_code,
+                                "error": mapped.message,
+                            },
+                        )
+                        raise mapped from exc
 
-        return await asyncio.to_thread(
-            self._sync_client._infer_rest,
-            model_id,
-            tensor_inputs,
-            timeout,
-        )
+                    client_ms = (time.perf_counter() - t0) * 1000.0
+                    response = InferenceResponse.from_proto(proto_resp)
+                    logger.debug(
+                        "Completed async gRPC inference",
+                        extra={
+                            "model_id": model_id,
+                            "transport": "grpc",
+                            "server_duration_ms": round(response.duration_ms, 3),
+                            "client_latency_ms": round(client_ms, 3),
+                        },
+                    )
+                    return response
+
+                return await asyncio.to_thread(
+                    self._sync_client._infer_rest,
+                    model_id,
+                    tensor_inputs,
+                    timeout,
+                )
+            except (ModelLoadingError, ResourceExhaustedError) as exc:
+                if attempt >= max_attempts:
+                    raise
+                delay = (
+                    float(exc.retry_after)
+                    if exc.retry_after is not None and exc.retry_after > 0
+                    else self.retry_backoff * (2 ** attempt)
+                )
+                attempt += 1
+                await asyncio.sleep(delay)
+
+    async def infer_dataset(
+        self,
+        model_id: str,
+        inputs: InputTypes,
+        *,
+        batch_size: int = 32,
+        concurrency: int = 4,
+        use_grpc: Optional[bool] = None,
+        timeout: Optional[float] = None,
+        client_timeout_ms: Optional[int] = None,
+        parameters: Optional[Mapping[str, str]] = None,
+        retries: Optional[int] = None,
+    ) -> InferenceResponse:
+        """Asynchronously slices a dataset along ``Axis(0)`` into chunks and executes them concurrently."""
+        chunks = slice_inputs_batch(inputs, batch_size=batch_size)
+        sem = asyncio.Semaphore(max(1, int(concurrency)))
+
+        async def _run_chunk(chunk: Any) -> InferenceResponse:
+            async with sem:
+                return await self.infer(
+                    model_id=model_id,
+                    inputs=chunk,
+                    use_grpc=use_grpc,
+                    timeout=timeout,
+                    client_timeout_ms=client_timeout_ms,
+                    parameters=parameters,
+                    retries=retries,
+                )
+
+        responses = await asyncio.gather(*(_run_chunk(c) for c in chunks))
+        return concat_inference_responses(responses)
 
     async def list_models(self) -> List[ModelInfo]:
         """Asynchronously lists all registered models."""
@@ -978,6 +1256,26 @@ class AsyncSnoozeClient:
         """Asynchronously checks the HTTP readiness probe (``GET /health/ready``)."""
         return await asyncio.to_thread(self._sync_client.health_ready)
 
+    async def wait_until_ready(
+        self,
+        *,
+        timeout: float = 30.0,
+        poll_interval: float = 0.2,
+    ) -> bool:
+        """Asynchronously polls ``/health/ready`` until the SnoozeML daemon responds ready."""
+        deadline = time.monotonic() + float(timeout)
+        while True:
+            try:
+                if await self.health_ready():
+                    return True
+            except Exception:
+                pass
+            if time.monotonic() >= deadline:
+                raise SnoozeConnectionError(
+                    f"Timed out waiting {timeout}s for SnoozeML server at {self.http_endpoint} to become ready"
+                )
+            await asyncio.sleep(max(0.01, float(poll_interval)))
+
     async def grpc_health(self, service: str = "") -> bool:
         """Asynchronously checks the gRPC health check service."""
         _, health_stub = self._ensure_aio_grpc_stubs()
@@ -996,6 +1294,11 @@ class AsyncSnoozeClient:
         """Asynchronously retrieves Prometheus metrics from ``GET /metrics``."""
         return await asyncio.to_thread(self._sync_client.metrics)
 
+    async def get_metrics(self) -> DaemonMetrics:
+        """Asynchronously retrieves and parses Prometheus metrics into :class:`~snoozeml.metrics.DaemonMetrics`."""
+        raw = await self.metrics()
+        return DaemonMetrics.from_prometheus(raw)
+
     async def upload_model(
         self,
         file: Union[str, Path, bytes, Any],
@@ -1004,6 +1307,7 @@ class AsyncSnoozeClient:
         model_id: Optional[str] = None,
         description: Optional[str] = None,
         pinned: bool = False,
+        overwrite: bool = False,
         max_batch_size: Optional[int] = None,
         max_batch_delay_ms: Optional[int] = None,
         idle_timeout_secs: Optional[int] = None,
@@ -1023,6 +1327,129 @@ class AsyncSnoozeClient:
             model_id=model_id,
             description=description,
             pinned=pinned,
+            overwrite=overwrite,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    async def deploy_sklearn(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        initial_types: Optional[Any] = None,
+        sample_input: Optional[Any] = None,
+        input_name: str = "float_input",
+        output_name: str = "output",
+        opset_version: int = 17,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Asynchronously converts a fitted scikit-learn model to ONNX and deploys it."""
+        return await self.models.deploy_sklearn(
+            model=model,
+            model_id=model_id,
+            initial_types=initial_types,
+            sample_input=sample_input,
+            input_name=input_name,
+            output_name=output_name,
+            opset_version=opset_version,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    async def deploy_torch(
+        self,
+        model: Any,
+        sample_input: Any,
+        *,
+        model_id: str,
+        input_names: Optional[Any] = None,
+        output_names: Optional[Any] = None,
+        dynamic_axes: Optional[Mapping[str, Mapping[int, str]]] = None,
+        opset_version: int = 17,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Asynchronously exports a PyTorch ``nn.Module`` to ONNX and deploys it."""
+        return await self.models.deploy_torch(
+            model=model,
+            sample_input=sample_input,
+            model_id=model_id,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=opset_version,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
+            max_batch_size=max_batch_size,
+            max_batch_delay_ms=max_batch_delay_ms,
+            idle_timeout_secs=idle_timeout_secs,
+            min_residency_secs=min_residency_secs,
+            autoscale_queue_threshold=autoscale_queue_threshold,
+            max_replicas=max_replicas,
+            routing_strategy=routing_strategy,
+            device=device,
+        )
+
+    async def deploy_xgboost(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        overwrite: bool = True,
+        pinned: bool = False,
+        description: Optional[str] = None,
+        max_batch_size: Optional[int] = None,
+        max_batch_delay_ms: Optional[int] = None,
+        idle_timeout_secs: Optional[int] = None,
+        min_residency_secs: Optional[int] = None,
+        autoscale_queue_threshold: Optional[int] = None,
+        max_replicas: Optional[int] = None,
+        routing_strategy: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> ModelInfo:
+        """Asynchronously exports an XGBoost model to ``.xgb.json`` and deploys it."""
+        return await self.models.deploy_xgboost(
+            model=model,
+            model_id=model_id,
+            overwrite=overwrite,
+            pinned=pinned,
+            description=description,
             max_batch_size=max_batch_size,
             max_batch_delay_ms=max_batch_delay_ms,
             idle_timeout_secs=idle_timeout_secs,
