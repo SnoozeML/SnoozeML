@@ -9,6 +9,10 @@ Complete API reference for the ``snoozeml`` package, generated from inline docst
    client
    models
    inference
+   auth
+   streams
+   config
+   metrics
    converters
    exceptions
    logging

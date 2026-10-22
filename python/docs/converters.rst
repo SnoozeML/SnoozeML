@@ -1,10 +1,54 @@
-Model Converters (scikit-learn, PyTorch & XGBoost)
-==================================================
+Model Converters & One-Step Deployment
+=======================================
 
 ``snoozeml.converters`` provides one-function export pipelines that convert trained Python models into ``.onnx`` or ``.xgb.json`` artifacts ready for SnoozeML's dynamic micro-batching engine.
 
-1. Exporting scikit-learn Models & Pipelines
---------------------------------------------
+In addition, :class:`~snoozeml.SnoozeClient` provides one-step deployment methods (:meth:`~snoozeml.SnoozeClient.deploy_sklearn`, :meth:`~snoozeml.SnoozeClient.deploy_torch`, :meth:`~snoozeml.SnoozeClient.deploy_xgboost`) that convert, upload, and register models on the server without touching the filesystem.
+
+One-Step In-Memory Deployment
+-----------------------------
+
+Deploy trained models directly to a running SnoozeML instance without creating local files:
+
+.. code-block:: python
+
+   from snoozeml import SnoozeClient
+   from sklearn.ensemble import RandomForestClassifier
+   import numpy as np
+
+   client = SnoozeClient("http://localhost:8080", api_key="admin-key")
+
+   # 1. Scikit-learn one-step deployment
+   clf = RandomForestClassifier().fit(X_train, y_train)
+   client.deploy_sklearn(
+       model=clf,
+       sample_input=X_train[:5],
+       model_id="iris_rf",
+       max_batch_size=32,
+       idle_timeout_secs=60,
+       load=True,
+       overwrite=True,
+   )
+
+   # 2. PyTorch one-step deployment
+   client.deploy_torch(
+       model=torch_model,
+       sample_input=sample_tensor,
+       model_id="torch_mlp",
+       max_batch_size=64,
+       overwrite=True,
+   )
+
+   # 3. XGBoost one-step deployment (pure-Rust tree format)
+   client.deploy_xgboost(
+       model=xgb_booster,
+       model_id="fraud_tree",
+       max_batch_size=128,
+       overwrite=True,
+   )
+
+1. Standalone scikit-learn Export (``export_sklearn``)
+------------------------------------------------------
 
 :func:`~snoozeml.converters.export_sklearn` exports fitted scikit-learn estimators (``RandomForestClassifier``, ``GradientBoostingClassifier``, ``LogisticRegression``, ``LinearRegression``, ``MLPClassifier``, etc.) and ``Pipeline`` objects to ONNX with dynamic ``batch_size`` along ``Axis(0)``:
 
@@ -32,8 +76,8 @@ Model Converters (scikit-learn, PyTorch & XGBoost)
        output_path="models/iris_rf_pipeline.onnx",
    )
 
-2. Exporting PyTorch ``nn.Module`` Models
------------------------------------------
+2. Standalone PyTorch Export (``export_torch``)
+-----------------------------------------------
 
 :func:`~snoozeml.converters.export_torch` exports PyTorch ``nn.Module`` models to ONNX while preserving the original ``training`` mode and automatically configuring dynamic batch axes on dimension ``0``:
 
@@ -57,8 +101,8 @@ Model Converters (scikit-learn, PyTorch & XGBoost)
        output_path="models/torch_mlp.onnx",
    )
 
-3. Exporting XGBoost Models (Pure-Rust Tree Backend)
-----------------------------------------------------
+3. Standalone XGBoost Export (``export_xgboost``)
+-------------------------------------------------
 
 :func:`~snoozeml.converters.export_xgboost` exports ``xgboost.Booster``, ``XGBClassifier``, and ``XGBRegressor`` models to ``.xgb.json`` for zero-FFI execution on SnoozeML's pure-Rust ``hessboost`` backend:
 

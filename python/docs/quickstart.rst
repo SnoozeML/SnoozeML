@@ -1,6 +1,8 @@
 Quickstart & Client Usage
 =========================
 
+The SnoozeML Python SDK provides synchronous (:class:`~snoozeml.SnoozeClient`) and asynchronous (:class:`~snoozeml.AsyncSnoozeClient`) clients that connect your machine learning code to the SnoozeML daemon.
+
 Installation
 ------------
 
@@ -17,7 +19,7 @@ Install the ``snoozeml`` package from the ``python/`` directory of the repositor
 Connecting to a SnoozeML Daemon
 -------------------------------
 
-:class:`~snoozeml.SnoozeClient` (synchronous) and :class:`~snoozeml.AsyncSnoozeClient` (asynchronous) support both HTTP REST (default port ``8080``) and native gRPC (default port ``50051``):
+:class:`~snoozeml.SnoozeClient` handles both HTTP REST (for management, model upload, and lifecycle operations) and native gRPC (for high-throughput binary tensor inference):
 
 .. code-block:: python
 
@@ -27,9 +29,79 @@ Connecting to a SnoozeML Daemon
    client = SnoozeClient(
        http_endpoint="http://localhost:8080",
        grpc_endpoint="localhost:50051",
-       use_grpc=True,
-       api_key="sk-admin-key",  # or set SNOOZE_API_KEY env var
+       use_grpc=True,              # Route infer() calls over binary gRPC
+       api_key="sk-admin-key",     # Authenticate via x-api-key / Bearer
+       max_retries=3,              # Automatically retry transient 503 / Loading states
+       retry_backoff=0.25,         # Exponential backoff base delay in seconds
    )
+
+   # Context manager automatically handles connection pooling and cleanup
+   with client:
+       # Wait until daemon passes health probes
+       client.wait_until_ready(timeout=10.0)
+
+Running Tensor Inference
+------------------------
+
+Pass a dictionary mapping input binding names to NumPy arrays, PyTorch tensors, or Python nested lists:
+
+.. code-block:: python
+
+   import numpy as np
+   from snoozeml import SnoozeClient
+
+   with SnoozeClient("http://localhost:8080", use_grpc=True) as client:
+       input_tensor = np.random.randn(2, 4).astype(np.float32)
+
+       response = client.infer(
+           model_id="iris_classifier",
+           inputs={"input": input_tensor},
+       )
+
+       # Read output as NumPy ndarray
+       predictions = response.get_numpy("output")
+       print(f"Predictions shape: {predictions.shape}")
+       print(f"Server latency: {response.duration_ms:.2f} ms")
+
+Direct PyTorch Tensors Support
+------------------------------
+
+PyTorch tensors are automatically detached from autograd graphs and transferred to CPU memory before serialization:
+
+.. code-block:: python
+
+   import torch
+   from snoozeml import SnoozeClient
+
+   client = SnoozeClient("http://localhost:8080")
+
+   # Tensors with requires_grad=True or on GPU are safely handled
+   x = torch.randn(4, 16, requires_grad=True)
+   resp = client.infer("mlp_net", {"input": x})
+
+   # Convert output directly back to a PyTorch tensor on your target device
+   out_torch = resp.get_torch("output", device="cuda:0" if torch.cuda.is_available() else "cpu")
+
+Dataset Batch Chunking (``infer_dataset``)
+------------------------------------------
+
+When scoring large offline datasets, sending tens of thousands of rows at once can trigger network limits or GPU out-of-memory errors. The :meth:`~snoozeml.SnoozeClient.infer_dataset` method slices inputs along ``Axis(0)`` into batches and concatenates outputs automatically:
+
+.. code-block:: python
+
+   import numpy as np
+
+   # 10,000 samples with 32 features each
+   large_features = np.random.randn(10000, 32).astype(np.float32)
+
+   # Slices into chunks of 128 and returns unified InferenceResponse
+   full_response = client.infer_dataset(
+       model_id="fraud_detector",
+       inputs={"features": large_features},
+       batch_size=128,
+   )
+
+   print(f"Total scored samples: {full_response.get_numpy('output').shape[0]}")
 
 Model Lifecycle & Scale-to-Zero Management
 ------------------------------------------
@@ -38,7 +110,7 @@ Use ``client.models`` (:class:`~snoozeml.models.ModelsManager`) to inspect model
 
 .. code-block:: python
 
-   # List all registered models
+   # List all registered models and inspection states
    for model in client.models.list():
        print(f"{model.id}: state={model.state.value}, loaded={model.is_loaded}, pinned={model.pinned}")
 
@@ -53,57 +125,36 @@ Use ``client.models`` (:class:`~snoozeml.models.ModelsManager`) to inspect model
    client.models.unpin("demo-model")
    client.models.evict("demo-model")
 
-Uploading Models via HTTP (Files & In-Memory Bytes)
----------------------------------------------------
+   # Wait for a model to finish loading its weights into memory
+   client.models.wait_for_ready("demo-model", timeout=30.0, trigger_load=True)
 
-Deploy models directly via HTTP without volume mounts or daemon restarts. Supports local file paths or raw in-memory bytes:
+One-Step Model Deployment & Upload
+----------------------------------
 
-.. code-block:: python
-
-   # Option A: Upload from local file path with custom runtime configuration
-   client.upload_model(
-       file="models/iris_classifier.onnx",
-       model_id="iris_classifier",
-       max_batch_size=32,
-       idle_timeout_secs=120,
-       pinned=True,
-   )
-
-   # Option B: Upload raw in-memory bytes without saving to disk
-   raw_bytes = booster.save_raw(raw_format="json")
-   client.upload_model(
-       file=raw_bytes,
-       filename="cancer_xgboost.xgb.json",  # Required for format detection when uploading bytes
-       model_id="cancer_xgboost",
-   )
-
-   # Option C: Refresh models directory on server at runtime
-   refreshed = client.refresh_models()
-
-Running Tensor Inference
-------------------------
-
-
-Pass a dictionary mapping input binding names to NumPy arrays (or a single ``np.ndarray``) to :meth:`~snoozeml.SnoozeClient.infer`:
+Deploy trained models directly from Python memory or local files:
 
 .. code-block:: python
 
+   from sklearn.datasets import load_iris
+   from sklearn.ensemble import RandomForestClassifier
    import numpy as np
 
-   input_tensor = np.random.randn(4, 10).astype(np.float32)
+   X, y = load_iris(return_X_y=True)
+   clf = RandomForestClassifier(n_estimators=10).fit(X.astype(np.float32), y)
 
-   response = client.infer(
-       model_id="demo-model",
-       inputs={"input": input_tensor},
-       use_grpc=True,
+   # Deploy directly from memory: export -> upload -> register -> load
+   model_info = client.deploy_sklearn(
+       model=clf,
+       sample_input=X[:5].astype(np.float32),
+       model_id="iris_rf",
+       overwrite=True,
+       load=True,
+       pinned=True,
    )
+   print(f"Model deployed with state: {model_info.state}")
 
-   # Extract reshaped float32 NumPy array by output binding name
-   output = response.get_numpy("output")
-   print(f"Shape: {output.shape}, Server Duration: {response.duration_ms:.2f} ms")
-
-Asynchronous Inference & Micro-Batching
----------------------------------------
+Asynchronous Concurrent Micro-Batching
+--------------------------------------
 
 Use :class:`~snoozeml.AsyncSnoozeClient` with ``asyncio.gather`` to dispatch concurrent requests that SnoozeML automatically coalesces into dynamic micro-batches along ``Axis(0)``:
 
@@ -114,7 +165,7 @@ Use :class:`~snoozeml.AsyncSnoozeClient` with ``asyncio.gather`` to dispatch con
    from snoozeml import AsyncSnoozeClient
 
    async def run_batch():
-       async with AsyncSnoozeClient(endpoint="localhost:50051", use_grpc=True) as client:
+       async with AsyncSnoozeClient(http_endpoint="http://localhost:8080", grpc_endpoint="localhost:50051", use_grpc=True) as client:
            requests = [
                client.infer("demo-model", {"input": np.ones((1, 10), dtype=np.float32)})
                for _ in range(16)
