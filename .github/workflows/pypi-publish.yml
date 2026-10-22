@@ -1,0 +1,212 @@
+name: Publish Python SDK to PyPI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Only trigger when the Python SDK manifest is touched
+      - "python/pyproject.toml"
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: "Force publish even if version did not change between commits"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================================
+  # JOB 1: Version Change Gatekeeper
+  # Inspects python/pyproject.toml and compares against the previous commit.
+  # If version did not change (e.g. only dependencies/metadata touched), skips publishing.
+  # ============================================================================
+  check-version:
+    name: Check version bump
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.version_diff.outputs.changed }}
+      version: ${{ steps.version_diff.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 20 # Sufficient depth so github.event.before is reachable on multi-commit pushes
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compare python/pyproject.toml version with previous commit
+        id: version_diff
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          FORCE_PUBLISH: ${{ inputs.force_publish || 'false' }}
+        run: |
+          python - << 'EOF'
+          import os, subprocess, sys, tomllib
+
+          pyproject_path = "python/pyproject.toml"
+          try:
+              with open(pyproject_path, "rb") as f:
+                  new_ver = tomllib.load(f).get("project", {}).get("version")
+          except Exception as e:
+              print(f"Error reading {pyproject_path}: {e}", file=sys.stderr)
+              new_ver = None
+
+          old_ver = None
+          candidates = []
+          before_sha = os.environ.get("BEFORE_SHA", "").strip()
+          if before_sha and before_sha != "0000000000000000000000000000000000000000":
+              candidates.append(f"{before_sha}:{pyproject_path}")
+          candidates.append(f"HEAD~1:{pyproject_path}")
+
+          for rev in candidates:
+              try:
+                  old_bytes = subprocess.check_output(
+                      ["git", "show", rev],
+                      stderr=subprocess.DEVNULL
+                  )
+                  old_ver = tomllib.loads(old_bytes.decode("utf-8")).get("project", {}).get("version")
+                  if old_ver:
+                      print(f"Retrieved previous version ({old_ver}) from git rev: {rev}")
+                      break
+              except Exception:
+                  continue
+
+          force = os.environ.get("FORCE_PUBLISH", "false").lower() == "true"
+          changed = "true" if (new_ver and (new_ver != old_ver or force)) else "false"
+
+          print(f"Version comparison: old={old_ver} -> new={new_ver} (changed={changed}, force={force})")
+
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a") as out:
+                  out.write(f"changed={changed}\n")
+                  out.write(f"version={new_ver or ''}\n")
+                  out.write(f"old_version={old_ver or ''}\n")
+          EOF
+
+  # ============================================================================
+  # JOB 2: Build Pure Python Wheel & Source Distribution (sdist)
+  # Because snoozeml is pure Python (no compiled C/Rust extensions), a single
+  # build produces a universal wheel (py3-none-any.whl) and sdist (.tar.gz).
+  # ============================================================================
+  build-package:
+    name: Build sdist and universal wheel
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools and Twine
+        run: |
+          python -m pip install --upgrade pip build twine
+
+      - name: Build sdist and universal wheel
+        run: |
+          python -m build python/ --outdir dist/
+
+      - name: Validate distribution packages with Twine
+        run: |
+          twine check --strict dist/*
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          retention-days: 7
+
+  # ============================================================================
+  # JOB 3: Multi-OS & Multi-Python Verification Matrix
+  # Verifies that the built universal wheel installs cleanly and imports without
+  # errors across Linux, macOS, and Windows, and Python 3.9 through 3.13.
+  # ============================================================================
+  test-distributions:
+    name: Verify Wheel (${{ matrix.os }} - Python ${{ matrix.python-version }})
+    needs: [check-version, build-package]
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          - os: macos-latest
+            python-version: "3.9"
+          - os: macos-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.9"
+          - os: windows-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.13"
+
+    steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download built package distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Install built wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+          python -c "import snoozeml; print('Verified SnoozeML version:', snoozeml.__version__)"
+          python -c "from snoozeml import (Client, AsyncClient, Role, JwtAlgorithm, SnoozeConfig, SnoozeDaemon)"
+
+  # ============================================================================
+  # JOB 4: Publish to PyPI via OIDC Trusted Publishing
+  # Uses PyPI Trusted Publishing (OIDC token exchange) within the 'pypi' environment.
+  # ============================================================================
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [check-version, build-package, test-distributions]
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/snoozeml
+    permissions:
+      id-token: write # Mandatory for PyPI Trusted Publishing (OIDC)
+
+    steps:
+      - name: Download distribution packages
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
