@@ -154,6 +154,9 @@ grpcurl -plaintext \
 
 ## 5. Client Code Examples
 
+> [!TIP]
+> **Prefer the Official Python SDK**: Rather than manually compiling `.proto` files, you can simply install the official client with `pip install "snoozeml[grpc]"`. It includes pre-compiled protobuf stubs, connection pooling, automatic NumPy array marshaling, and lifecycle management. See the [Python SDK Guide](/SnoozeML/client/python-sdk/).
+
 ### Python Client (`grpcio` + NumPy)
 
 Install dependencies:

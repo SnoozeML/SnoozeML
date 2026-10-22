@@ -92,7 +92,7 @@ except ImportError:
     except (NotImplementedError, AttributeError) as exc:
         raise ImportError(
             "Could not load SnoozeML gRPC protobuf stubs. Either install the 'snoozeml' package "
-            "(`pip install -e ./python`) or install `grpcio-tools` (`pip install grpcio-tools`)."
+            "(`pip install 'snoozeml[grpc]'` or `pip install -e ./python`) or install `grpcio-tools` (`pip install grpcio-tools`)."
         ) from exc
     finally:
         os.chdir(_saved_cwd)

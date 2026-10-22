@@ -376,7 +376,7 @@ def _compile_step(
 
     raise ConversionError(
         f"Estimator '{cls_name}' is not natively supported without 'skl2onnx'. "
-        f"Install 'snoozeml[converters]' (pip install skl2onnx onnx) for extended estimator support."
+        f"Install 'snoozeml[converters]' (pip install \"snoozeml[converters]\") for extended estimator support."
     )
 
 

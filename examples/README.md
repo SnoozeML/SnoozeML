@@ -19,11 +19,13 @@ This folder contains step-by-step, interactive Jupyter notebooks demonstrating h
 ## Prerequisites
 
 1. **Install Python SDK & Dependencies:**
-   From the repository root:
    ```bash
-   # Install SnoozeML Python SDK with all runtime extras (gRPC, ONNX, XGBoost, PyTorch converters)
-   pip install -e "./python[full]"
+   # Install SnoozeML Python SDK from PyPI with all runtime extras
+   pip install "snoozeml[full]"
    pip install jupyter
+
+   # (Optional) For editable development from a cloned repository:
+   # pip install -e "./python[full]"
 
    # Optional: For Chronos-Bolt custom worker (Notebook 04):
    pip install -r examples/chronos_bolt/requirements.txt

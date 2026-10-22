@@ -65,23 +65,43 @@ flowchart TD
 
 ## 1. Installation & Environment Setup
 
-Install the package directly from the local repository or build an editable wheel:
+Install the official `snoozeml` package directly from PyPI:
 
 ```bash
-# Standard installation (core client, HTTP REST, gRPC, and pure-Rust tree support)
-pip install ./python
+# Core lightweight HTTP REST client (zero compiled C-extensions)
+pip install snoozeml
 
-# Editable development installation
-pip install -e ./python
+# High-performance native gRPC transport + NumPy array support
+pip install "snoozeml[grpc]"
 
-# Include optional ML framework converter dependencies (scikit-learn, skl2onnx, onnx, xgboost-cpu)
-pip install "./python[converters]"
+# Model conversion toolkit (Scikit-Learn, ONNX, and XGBoost)
+pip install "snoozeml[converters]"
+
+# Complete toolkit (client, gRPC, custom worker, and all converters)
+pip install "snoozeml[full]"
 ```
 
-### Dependency Profiles
+### Dependency Profiles & Extras
 
-* **Base (`snoozeml`)**: Requires only Python 3.9+ and `requests`. Works with native Python lists, raw bytes, and standard library buffers even if `numpy` is not installed.
-* **Extras (`[grpc]`, `[onnx]`, `[xgboost]`, `[converters]`)**: Installs `grpcio`/`protobuf` for gRPC transport and CPU-only `numpy`, `scikit-learn`, `skl2onnx`, `onnx`, and `xgboost-cpu` for model conversion without pulling heavy GPU/CUDA libraries. (PyTorch models and tensors are supported automatically via duck-typing if `torch` is already present in your training environment.)
+SnoozeML provides modular optional dependencies (extras) so your client applications and container images remain lean and avoid bloated dependencies:
+
+| Extra | Command | Included Packages | Purpose & Technical Details |
+| :--- | :--- | :--- | :--- |
+| **Base** | `pip install snoozeml` | `requests>=2.28.0` | Ultra-lightweight HTTP REST client for model lifecycle management (`load`, `unload`, `pin`, `unpin`), status polling, health probes, Prometheus metrics, and basic inference. Pure Python with zero compiled binary dependencies or C-extensions. |
+| **`[grpc]`** | `pip install "snoozeml[grpc]"` | `grpcio`, `grpcio-health-checking`, `protobuf`, `numpy` | High-throughput, low-latency binary gRPC transport with compiled protobuf stubs, health checking, and automatic NumPy `ndarray` marshaling to raw little-endian bytes. |
+| **`[converters]`** | `pip install "snoozeml[converters]"` | `numpy`, `scikit-learn`, `onnx`, `skl2onnx`, `xgboost[-cpu]` | Complete offline model conversion toolkit (`export_sklearn`, `export_xgboost`, `deploy_sklearn`, `deploy_xgboost`). Bundles both `[onnx]` and `[xgboost]` extras. |
+| **`[full]`** | `pip install "snoozeml[full]"` | `grpcio`, `protobuf`, `numpy`, `scikit-learn`, `onnx`, `skl2onnx`, `xgboost[-cpu]` | All-in-one distribution bundle combining `[grpc]`, `[worker]`, and `[converters]` with zero GPU/CUDA bloat. |
+| **`[onnx]`** | `pip install "snoozeml[onnx]"` | `numpy`, `scikit-learn`, `onnx`, `skl2onnx` | Scikit-learn estimator and pipeline export (`export_sklearn`, `deploy_sklearn`) to ONNX runtime format. |
+| **`[xgboost]`** | `pip install "snoozeml[xgboost]"` | `numpy`, `xgboost-cpu` (Linux) / `xgboost` (macOS/Win) | XGBoost model export to `.xgb.json` for pure-Rust `hessboost` tree execution. Dynamically resolves to `xgboost-cpu` on Linux via PEP 508 environment markers to prevent dragging heavy `nvidia-nccl` / CUDA packages into CPU environments. |
+| **`[torch]`** | `pip install "snoozeml[torch]"` | `torch>=2.0.0` | PyTorch `nn.Module` export to ONNX (`export_torch`, `deploy_torch`). *Note: If PyTorch is already present in your environment, `snoozeml` automatically duck-types PyTorch tensors without requiring this extra.* |
+| **`[worker]`** | `pip install "snoozeml[worker]"` | `numpy>=1.24.0` | Minimal runtime dependency profile for process-isolated custom Python worker models (`snooze_model.py`) using NumPy tensor format. |
+| **`[dev]`** | `pip install "snoozeml[dev]"` | `pytest`, `pytest-asyncio`, `mypy`, `ruff`, `sphinx`, `shibuya` | Testing, linting, type validation, and Sphinx documentation build tooling. |
+
+> [!NOTE]
+> For editable local development or contributing from a local repository clone:
+> ```bash
+> pip install -e "./python[full,dev]"
+> ```
 
 ---
 

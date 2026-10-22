@@ -6,15 +6,40 @@ The SnoozeML Python SDK provides synchronous (:class:`~snoozeml.SnoozeClient`) a
 Installation
 ------------
 
-Install the ``snoozeml`` package from the ``python/`` directory of the repository:
+Install the official ``snoozeml`` package directly from PyPI:
 
 .. code-block:: bash
 
-   # Core HTTP + gRPC client & native ONNX/XGBoost converters
-   pip install ./python
+   # Core lightweight HTTP REST client (zero compiled C-extensions)
+   pip install snoozeml
 
-   # Include optional ML converter dependencies (scikit-learn, skl2onnx,onnx, xgboost-cpu)
-   pip install "./python[converters]"
+   # High-performance native gRPC transport + NumPy array support
+   pip install "snoozeml[grpc]"
+
+   # Complete toolkit: client, gRPC, custom worker, and all model converters
+   pip install "snoozeml[full]"
+
+Optional Extras & Dependency Profiles
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+SnoozeML provides modular extras so you only install what your application requires:
+
+* ``snoozeml``: Base lightweight HTTP REST client (``requests``) for model lifecycle management (``load``, ``unload``, ``pin``, ``unpin``), health checks, and metrics. Zero compiled C-extensions.
+* ``snoozeml[grpc]``: Native binary gRPC client (``grpcio``, ``protobuf``, ``numpy``) with low-latency tensor serialization.
+* ``snoozeml[converters]``: Complete offline model conversion toolkit (``numpy``, ``scikit-learn``, ``onnx``, ``skl2onnx``, ``xgboost[-cpu]``) for exporting models to ONNX and pure-Rust tree formats.
+* ``snoozeml[full]``: All-in-one bundle containing ``[grpc]``, ``[worker]``, and ``[converters]`` with zero CUDA bloat.
+* ``snoozeml[onnx]``: Scikit-learn estimator and pipeline export to ONNX runtime format.
+* ``snoozeml[xgboost]``: Tabular tree export to ``.xgb.json`` for pure-Rust ``hessboost`` execution (uses ``xgboost-cpu`` on Linux).
+* ``snoozeml[torch]``: PyTorch ``nn.Module`` export to ONNX (duck-typing works automatically if PyTorch is already present).
+* ``snoozeml[worker]``: Minimal dependency profile (``numpy``) for process-isolated custom Python worker models (``snooze_model.py``).
+
+.. note::
+
+   For editable local development from the repository root:
+
+   .. code-block:: bash
+
+      pip install -e "./python[full,dev]"
 
 Connecting to a SnoozeML Daemon
 -------------------------------

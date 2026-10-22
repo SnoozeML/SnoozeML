@@ -12,15 +12,38 @@ It provides:
 
 ## Installation
 
-From the repository root:
+Install `snoozeml` directly from PyPI:
 
 ```bash
-# Standard installation (HTTP + gRPC client & native ONNX/XGBoost converters)
-pip install -e ./python
+# Lightweight HTTP REST client (zero compiled C-extensions, pure Python)
+pip install snoozeml
 
-# With optional third-party converter & dev dependencies
-pip install -e "./python[converters,dev]"
+# High-performance native gRPC inference + NumPy array support
+pip install "snoozeml[grpc]"
+
+# Complete toolkit: gRPC client, custom worker, and all model converters
+pip install "snoozeml[full]"
 ```
+
+### Modular Dependency Extras
+
+| Extra | Command | Included Packages | Purpose |
+| :--- | :--- | :--- | :--- |
+| *(None / Base)* | `pip install snoozeml` | `requests` | Ultra-lightweight HTTP client for model lifecycle management (`load`, `unload`, `pin`, `unpin`), status polling, health probes, and metrics. Zero binary C-extensions. |
+| `[grpc]` | `pip install "snoozeml[grpc]"` | `grpcio`, `protobuf`, `numpy` | Native binary gRPC transport with automatic NumPy array serialization and low-latency inference. |
+| `[converters]` | `pip install "snoozeml[converters]"` | `numpy`, `scikit-learn`, `onnx`, `skl2onnx`, `xgboost[-cpu]` | Offline model export toolkit (`export_sklearn`, `export_xgboost`) targeting ONNX and pure-Rust tree formats. |
+| `[full]` | `pip install "snoozeml[full]"` | `grpc`, `converters`, `worker` | Full-featured installation for client, gRPC, custom workers, and model converters with zero CUDA bloat. |
+| `[onnx]` | `pip install "snoozeml[onnx]"` | `numpy`, `scikit-learn`, `onnx`, `skl2onnx` | Scikit-learn estimator and pipeline export to ONNX runtime format. |
+| `[xgboost]` | `pip install "snoozeml[xgboost]"` | `numpy`, `xgboost-cpu` (Linux) / `xgboost` (macOS/Win) | XGBoost model export to `.xgb.json` for pure-Rust `hessboost` tree execution. Uses `xgboost-cpu` on Linux to avoid pulling heavy NVIDIA CUDA packages. |
+| `[torch]` | `pip install "snoozeml[torch]"` | `torch` | PyTorch `nn.Module` export to ONNX. *(Note: If PyTorch is already installed in your training environment, `snoozeml` automatically duck-types PyTorch tensors without needing this extra).* |
+| `[worker]` | `pip install "snoozeml[worker]"` | `numpy` | Minimal dependency profile for process-isolated custom Python worker models (`snooze_model.py`). |
+| `[dev]` | `pip install "snoozeml[dev]"` | `pytest`, `mypy`, `ruff`, `sphinx` | Development, linting, testing, and documentation building. |
+
+> [!NOTE]
+> For editable local development from the repository root:
+> ```bash
+> pip install -e "./python[full,dev]"
+> ```
 
 ---
 

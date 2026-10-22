@@ -178,7 +178,41 @@ docker compose up -d
 
 ---
 
-## 6. Verifying the Installation
+## 6. Installing the Python SDK (`snoozeml`)
+
+To query SnoozeML, manage model lifecycles, and export ML models from Python, install the official `snoozeml` client library directly from PyPI:
+
+```bash
+# Core lightweight HTTP REST client (zero compiled C-extensions)
+pip install snoozeml
+
+# High-performance native gRPC transport + NumPy array support
+pip install "snoozeml[grpc]"
+
+# Complete toolkit: gRPC, NumPy, scikit-learn, ONNX, and XGBoost converters
+pip install "snoozeml[full]"
+```
+
+### Dependency Profiles & Extras
+
+SnoozeML provides modular extras so you only install what your application requires:
+
+| Extra | Command | Included Packages | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Base** | `pip install snoozeml` | `requests` | Ultra-lightweight HTTP REST client for model lifecycle management (`load`, `unload`, `pin`, `unpin`), status polling, health probes, and metrics. Zero compiled C-extensions. |
+| **`[grpc]`** | `pip install "snoozeml[grpc]"` | `grpcio`, `protobuf`, `numpy` | High-throughput native binary gRPC transport with automatic NumPy array serialization. |
+| **`[converters]`** | `pip install "snoozeml[converters]"` | `numpy`, `scikit-learn`, `onnx`, `skl2onnx`, `xgboost[-cpu]` | Offline model export tools (`export_sklearn`, `export_xgboost`) targeting ONNX and pure-Rust tree formats. |
+| **`[full]`** | `pip install "snoozeml[full]"` | `grpc`, `converters`, `worker` | All-in-one installation for client, gRPC, custom workers, and model converters with zero CUDA bloat. |
+| **`[onnx]`** | `pip install "snoozeml[onnx]"` | `numpy`, `scikit-learn`, `onnx`, `skl2onnx` | Scikit-learn estimator and pipeline export to ONNX runtime format. |
+| **`[xgboost]`** | `pip install "snoozeml[xgboost]"` | `numpy`, `xgboost-cpu` (Linux) / `xgboost` (macOS/Win) | XGBoost model export to `.xgb.json` for pure-Rust `hessboost` tree execution. Uses `xgboost-cpu` on Linux to avoid pulling heavy NVIDIA CUDA packages. |
+| **`[torch]`** | `pip install "snoozeml[torch]"` | `torch` | PyTorch `nn.Module` export to ONNX. *(Duck-typing works automatically if PyTorch is already present).* |
+| **`[worker]`** | `pip install "snoozeml[worker]"` | `numpy` | Minimal dependency profile for process-isolated custom Python worker models (`snooze_model.py`). |
+
+For full API documentation and code walkthroughs, see the [Python SDK Guide](/SnoozeML/client/python-sdk/).
+
+---
+
+## 7. Verifying the Installation
 
 Verify that the CLI is accessible and inspect the available commands:
 
@@ -215,7 +249,7 @@ Options:
 
 ---
 
-## 7. Helpful Environment Variables
+## 8. Helpful Environment Variables
 
 SnoozeML respects several environment variables to streamline configuration in containerized and cloud environments:
 
