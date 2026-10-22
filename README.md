@@ -180,6 +180,8 @@ with SnoozeClient(endpoint="127.0.0.1:50051", use_grpc=True) as client:
 
 ```
 
+Documentation available at [https://snoozeml.github.io/SnoozeML/python/](https://snoozeml.github.io/SnoozeML/python/).
+
 ---
 
 ## CLI, Configuration & Security
@@ -274,6 +276,7 @@ docker compose up snooze-slim
 ---
 
 ## Documentation, Examples & Quality Assurance
+Documentation is available at [https://snoozeml.github.io/SnoozeML/](https://snoozeml.github.io/SnoozeML/).
 
 * **Interactive Examples**: Step-by-step Jupyter notebooks and custom worker templates (Scikit-Learn ONNX, pure-Rust XGBoost trees, Amazon Chronos-Bolt, and real-time Kafka event streaming) are located in the [`examples/`](examples/) directory.
 * **Documentation Portal**: Run `npm --prefix docs run dev` to launch the local Astro Starlight developer portal, or build the complete documentation bundle with `npm --prefix docs run build` and `sphinx-build -b html python/docs docs/dist/python`.
