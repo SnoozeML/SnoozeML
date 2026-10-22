@@ -49,27 +49,47 @@ worker = [
     "numpy>=1.24.0",
 ]
 
-# Offline model conversion toolkit (Scikit-Learn, PyTorch, XGBoost -> ONNX/JSON)
-converters = [
+# Scikit-Learn & ONNX conversion utilities
+onnx = [
     "numpy>=1.24.0",
     "scikit-learn>=1.2.0",
-    "xgboost>=2.0.0",
     "onnx>=1.15.0",
     "skl2onnx>=1.16.0",
+]
+
+# CPU-only XGBoost conversion utilities (avoids pulling nvidia-nccl on Linux)
+xgboost = [
+    "numpy>=1.24.0",
+    "xgboost-cpu>=2.0.0; sys_platform == 'linux'",
+    "xgboost>=2.0.0; sys_platform != 'linux'",
+]
+
+# Optional PyTorch exporter support (standard PyPI wheel includes CUDA; for CPU-only, use --index-url https://download.pytorch.org/whl/cpu)
+torch = [
     "torch>=2.0.0",
 ]
 
-# Full alias providing all runtime, converter, and inference capabilities
+# Offline model conversion toolkit (Scikit-Learn, XGBoost -> ONNX/JSON; PyTorch supported via duck-typing/lazy import)
+converters = [
+    "numpy>=1.24.0",
+    "scikit-learn>=1.2.0",
+    "xgboost-cpu>=2.0.0; sys_platform == 'linux'",
+    "xgboost>=2.0.0; sys_platform != 'linux'",
+    "onnx>=1.15.0",
+    "skl2onnx>=1.16.0",
+]
+
+# Full alias providing all client, gRPC, worker, and converter capabilities (zero CUDA bloat)
 full = [
     "grpcio>=1.60.0",
     "grpcio-health-checking>=1.60.0",
     "protobuf>=4.25.0",
     "numpy>=1.24.0",
     "scikit-learn>=1.2.0",
-    "xgboost>=2.0.0",
+    "xgboost-cpu>=2.0.0; sys_platform == 'linux'",
+    "xgboost>=2.0.0; sys_platform != 'linux'",
     "onnx>=1.15.0",
     "skl2onnx>=1.16.0",
-    "torch>=2.0.0",
 ]
 
 # Development, linting, testing, and documentation dependencies

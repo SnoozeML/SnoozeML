@@ -74,14 +74,14 @@ pip install ./python
 # Editable development installation
 pip install -e ./python
 
-# Include optional ML framework converter dependencies (scikit-learn, PyTorch, skl2onnx, xgboost)
+# Include optional ML framework converter dependencies (scikit-learn, skl2onnx, onnx, xgboost-cpu)
 pip install "./python[converters]"
 ```
 
 ### Dependency Profiles
 
 * **Base (`snoozeml`)**: Requires only Python 3.9+ and `requests`. Works with native Python lists, raw bytes, and standard library buffers even if `numpy` is not installed.
-* **Extras (`[converters]`)**: Installs `numpy`, `torch`, `scikit-learn`, `skl2onnx`, and `xgboost` for model conversion and direct tensor operations.
+* **Extras (`[grpc]`, `[onnx]`, `[xgboost]`, `[converters]`)**: Installs `grpcio`/`protobuf` for gRPC transport and CPU-only `numpy`, `scikit-learn`, `skl2onnx`, `onnx`, and `xgboost-cpu` for model conversion without pulling heavy GPU/CUDA libraries. (PyTorch models and tensors are supported automatically via duck-typing if `torch` is already present in your training environment.)
 
 ---
 
@@ -500,6 +500,12 @@ export_xgboost(
     output_path="models/tree_model.xgb.json",
 )
 ```
+
+> [!NOTE]
+> PyTorch model export and tensor conversion only require the lightweight CPU wheel. To avoid downloading ~2.5 GB of unused CUDA packages on Linux, install PyTorch via its official CPU index:
+> ```bash
+> pip install torch --index-url https://download.pytorch.org/whl/cpu
+> ```
 
 ---
 

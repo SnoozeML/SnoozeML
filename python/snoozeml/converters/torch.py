@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -159,9 +160,26 @@ def _compile_torch_module_native(
             current = out_t
             continue
 
+        has_torch = "torch" in sys.modules
+        if not has_torch:
+            try:
+                import torch  # noqa: F401
+                has_torch = True
+            except ImportError:
+                has_torch = False
+
+        if not has_torch:
+            raise ConversionError(
+                f"Layer '{cls_name}' cannot be converted by SnoozeML's native builder and requires PyTorch. "
+                "PyTorch is not installed in the current environment. "
+                "SnoozeML only requires the lightweight CPU version of PyTorch for model export: "
+                "pip install torch --index-url https://download.pytorch.org/whl/cpu "
+                "(or: pip install \"snoozeml[torch]\")"
+            )
+
         raise ConversionError(
             f"Layer '{cls_name}' requires 'onnx' and 'onnxscript' packages for torch.onnx.export. "
-            f"Install via: pip install onnx onnxscript"
+            "Install via: pip install onnx onnxscript"
         )
 
     builder.add_node("Identity", [current], [output_name], name="final_output")
@@ -212,6 +230,12 @@ def export_torch(
 
     Raises:
         ConversionError: If ``model`` or ``sample_input`` is invalid or export fails.
+
+    Note:
+        PyTorch export requires ``torch``. SnoozeML only requires the lightweight CPU
+        version of PyTorch for offline model export (avoiding large CUDA downloads):
+        ``pip install torch --index-url https://download.pytorch.org/whl/cpu``
+        (or: ``pip install "snoozeml[torch]"``).
     """
     if model is None:
         raise ConversionError("Cannot export None PyTorch model")
@@ -234,7 +258,7 @@ def export_torch(
     logger.info(
         "Exporting PyTorch model to ONNX",
         extra={
-            "module": type(model).__name__,
+            "model_class": type(model).__name__,
             "input_names": resolved_inputs,
             "output_names": resolved_outputs,
             "opset_version": opset_version,
@@ -304,6 +328,10 @@ def _try_torch_onnx_export(
     try:
         import torch
     except ImportError:
+        logger.debug(
+            "PyTorch is not installed in the environment; attempting native ONNX builder "
+            "(SnoozeML only requires CPU PyTorch: pip install torch --index-url https://download.pytorch.org/whl/cpu)"
+        )
         return False
 
     if not isinstance(model, torch.nn.Module):

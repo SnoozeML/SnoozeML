@@ -101,6 +101,14 @@ Deploy trained models directly to a running SnoozeML instance without creating l
        output_path="models/torch_mlp.onnx",
    )
 
+.. note::
+
+   Exporting PyTorch models only requires the lightweight CPU wheel of PyTorch. To avoid downloading ~2.5 GB of unused CUDA packages on Linux, install PyTorch from its official CPU index:
+
+   .. code-block:: bash
+
+      pip install torch --index-url https://download.pytorch.org/whl/cpu
+
 3. Standalone XGBoost Export (``export_xgboost``)
 -------------------------------------------------
 

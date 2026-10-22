@@ -64,20 +64,38 @@ if not os.path.isfile(PROTO_ABS_PATH):
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Dynamically load protobuf descriptors and gRPC stubs directly from proto file
-# without modifying the proto directory or generating static files on disk.
-_saved_cwd = os.getcwd()
-try:
-    os.chdir(REPO_ROOT)
-    _inference_protos, _inference_services = grpc.protos_and_services(PROTO_REL_PATH)
-finally:
-    os.chdir(_saved_cwd)
+PYTHON_DIR = os.path.join(REPO_ROOT, "python")
+if PYTHON_DIR not in sys.path:
+    sys.path.insert(0, PYTHON_DIR)
 
-ModelInferRequest = _inference_protos.ModelInferRequest
-ModelInferResponse = _inference_protos.ModelInferResponse
-TensorData = _inference_protos.TensorData
-DataType = _inference_protos.DataType
-InferenceServiceStub = _inference_services.InferenceServiceStub
+# Dynamically load protobuf descriptors and gRPC stubs.
+# First attempt to import pre-compiled stubs from snoozeml._proto.
+# If not available, fall back to compiling the proto dynamically via grpc.protos_and_services.
+try:
+    from snoozeml._proto import (
+        DataType,
+        InferenceServiceStub,
+        ModelInferRequest,
+        ModelInferResponse,
+        TensorData,
+    )
+except ImportError:
+    _saved_cwd = os.getcwd()
+    try:
+        os.chdir(REPO_ROOT)
+        _inference_protos, _inference_services = grpc.protos_and_services(PROTO_REL_PATH)
+        ModelInferRequest = _inference_protos.ModelInferRequest
+        ModelInferResponse = _inference_protos.ModelInferResponse
+        TensorData = _inference_protos.TensorData
+        DataType = _inference_protos.DataType
+        InferenceServiceStub = _inference_services.InferenceServiceStub
+    except (NotImplementedError, AttributeError) as exc:
+        raise ImportError(
+            "Could not load SnoozeML gRPC protobuf stubs. Either install the 'snoozeml' package "
+            "(`pip install -e ./python`) or install `grpcio-tools` (`pip install grpcio-tools`)."
+        ) from exc
+    finally:
+        os.chdir(_saved_cwd)
 
 
 # ==============================================================================
@@ -729,6 +747,34 @@ GRPC_ENDPOINT = os.getenv("SNOOZE_GRPC_ENDPOINT", "localhost:50051")
 API_KEY = os.getenv("SNOOZE_API_KEY", None)
 
 
+def _check_endpoint_online(endpoint: str) -> bool:
+    """Best-effort TCP connection check to determine if endpoint is listening."""
+    import socket
+    parsed = urllib.parse.urlparse(endpoint)
+    host = parsed.hostname or (endpoint.split(":")[0] if ":" in endpoint else "127.0.0.1")
+    port = parsed.port or (int(endpoint.split(":")[1]) if ":" in endpoint else 8080)
+    try:
+        with socket.create_connection((host, port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+try:
+    import pytest
+
+    _server_online = _check_endpoint_online(HTTP_ENDPOINT) or _check_endpoint_online(GRPC_ENDPOINT)
+    pytestmark = pytest.mark.skipif(
+        not _server_online,
+        reason=(
+            f"SnoozeML daemon is not running on {HTTP_ENDPOINT} / {GRPC_ENDPOINT} "
+            "(start with `snooze serve` to run live integration tests)"
+        ),
+    )
+except ImportError:
+    pass
+
+
 def test_grpc_health_root():
     """Verifies gRPC standard health check for the server root (service='')."""
     client = SnoozeGRPCClient(GRPC_ENDPOINT, API_KEY)
@@ -764,7 +810,14 @@ def test_compare_http_and_grpc_inference():
 
     try:
         models = http_cli.list_models()
-        model_ids = [m["id"] for m in models] if models else ["demo-model"]
+        if not models:
+            try:
+                import pytest
+                pytest.skip("No models registered on running SnoozeML server to compare inference")
+            except ImportError:
+                print("[SKIP] No models registered on running SnoozeML server to compare inference")
+                return
+        model_ids = [m["id"] for m in models]
 
         tested_count = 0
         for mid in model_ids:
@@ -818,10 +871,21 @@ def test_grpc_error_empty_model_id():
 
 def test_grpc_error_malformed_tensor_buffer():
     """Verifies that mismatched tensor byte buffer returns INVALID_ARGUMENT (code 3)."""
+    http_cli = SnoozeHTTPClient(HTTP_ENDPOINT, API_KEY)
+    models = http_cli.list_models()
+    if not models:
+        try:
+            import pytest
+            pytest.skip("No registered model available on running server to test malformed tensor buffer")
+        except ImportError:
+            print("[SKIP] No registered model available to test malformed tensor buffer")
+            return
+
+    target_model = models[0]["id"]
     client = SnoozeGRPCClient(GRPC_ENDPOINT, API_KEY)
     try:
         # Declare shape [1, 4] (requires 16 bytes), but provide only 8 bytes (2 floats)
-        req = ModelInferRequest(model_id="demo-model")
+        req = ModelInferRequest(model_id=target_model)
         t = req.inputs.add()
         t.name = "input"
         t.shape.extend([1, 4])

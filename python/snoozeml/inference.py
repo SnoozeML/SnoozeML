@@ -139,6 +139,8 @@ def _to_float32_array(value: Any, shape: Optional[Sequence[int]] = None) -> Any:
         value = value.detach().cpu().numpy()
     if _HAS_NUMPY and np is not None:
         raw_arr = np.asarray(value, dtype=np.float32)
+        if raw_arr.ndim == 0 and shape is None:
+            return raw_arr
         arr = np.ascontiguousarray(raw_arr, dtype=np.float32)
         if shape is not None:
             return arr.reshape([int(d) for d in shape])
@@ -349,7 +351,10 @@ class TensorOutput:
             import torch
         except ImportError as exc:
             raise InvalidInputError(
-                "PyTorch tensor conversion requires 'torch'. Install with: pip install torch"
+                "PyTorch tensor conversion requires 'torch'. "
+                "SnoozeML only requires the lightweight CPU version: "
+                "pip install torch --index-url https://download.pytorch.org/whl/cpu "
+                "(or: pip install \"snoozeml[torch]\")"
             ) from exc
 
         if _HAS_NUMPY and np is not None:

@@ -13,7 +13,7 @@ Install the ``snoozeml`` package from the ``python/`` directory of the repositor
    # Core HTTP + gRPC client & native ONNX/XGBoost converters
    pip install ./python
 
-   # Include optional ML converter dependencies (scikit-learn, torch, skl2onnx, xgboost)
+   # Include optional ML converter dependencies (scikit-learn, skl2onnx,onnx, xgboost-cpu)
    pip install "./python[converters]"
 
 Connecting to a SnoozeML Daemon

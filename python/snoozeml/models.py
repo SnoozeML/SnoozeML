@@ -369,7 +369,7 @@ class ModelsManager:
         logger.info(
             "Uploading model to SnoozeML via HTTP",
             extra={
-                "filename": actual_filename,
+                "upload_filename": actual_filename,
                 "model_id": model_id,
                 "size_bytes": len(content),
                 "pinned": pinned,
