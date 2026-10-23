@@ -284,18 +284,56 @@ group_id = "snooze-workers"
 
 ```
 
-### Multi-Target Docker Images (`x86_64` & `aarch64`)
+### Official Container Images (GitHub Container Registry)
 
-While SnoozeML runs natively on bare metal, hardened multi-arch containers are available for containerized environments:
+Official prebuilt, hardened multi-arch container images are published to the **GitHub Container Registry (`ghcr.io`)** on every release:
+
+```text
+ghcr.io/snoozeml/snoozeml:<tag>
+```
+
+Three container options are available to match your deployment needs:
+
+| Option / Flavor | Primary Tags | Supported Platforms | Features & Backends |
+| :--- | :--- | :--- | :--- |
+| **`cuda` (Default)** | `:latest`, `:cuda`, `:full`, `:<version>` | `linux/amd64` | Full GPU-accelerated runtime with NVIDIA CUDA and TensorRT execution providers, Candle Safetensors, Tree models, bundled Python worker runtime (`numpy`, `requests`, `snoozeml`), and all streaming brokers (`streams-all`). |
+| **`cpu`** | `:cpu`, `:<version>-cpu` | `linux/amd64`, `linux/arm64` | Standard CPU container with all model backends, bundled Python worker runtime, and all streaming brokers. Ideal for cloud CPU instances. |
+| **`slim`** | `:slim`, `:lite`, `:<version>-slim` | `linux/amd64`, `linux/arm64` | Ultra-lean (~120 MB) pure Rust runtime. Includes ONNX Runtime (CPU), Candle, and Tree backends with zero Python dependencies for minimal CVE attack surface. |
+
+#### Pull & Run with Docker
 
 ```bash
-docker build --target slim -t snooze-ml:slim .  # ~120 MB: Pure Rust, zero Python runtime
-docker build --target cpu -t snooze-ml:cpu .    # ~280 MB: Includes lean Python worker venv
-docker build --target cuda -t snooze-ml:cuda .  # Full GPU acceleration (ONNX Runtime CUDA + cuDNN)
+# Pull the default GPU container (CUDA + TensorRT + Python workers)
+docker pull ghcr.io/snoozeml/snoozeml:latest
+
+# Or pull the standard CPU image
+docker pull ghcr.io/snoozeml/snoozeml:cpu
+
+# Or pull the minimal slim image (~120 MB, zero Python)
+docker pull ghcr.io/snoozeml/snoozeml:slim
+
+# Launch container with local models directory mounted:
+docker run -d \
+  --name snoozeml \
+  -p 8080:8080 -p 50051:50051 \
+  -v ./models:/models:ro \
+  ghcr.io/snoozeml/snoozeml:latest
+```
+
+> [!TIP]
+> For GPU acceleration with the default `cuda` image, ensure the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) is installed and pass `--gpus all` to `docker run`.
+
+#### Build from Source Locally
+
+You can also compile custom images directly using Docker BuildKit and `cargo-chef`:
+
+```bash
+docker build --target cuda -t snooze-ml:cuda .  # Default full GPU build
+docker build --target cpu -t snooze-ml:cpu .    # Standard CPU + Python build
+docker build --target slim -t snooze-ml:slim .  # Lean pure-Rust build (~120 MB)
 
 # Or launch via Docker Compose / Buildx Bake
-docker compose up snooze-slim
-
+docker compose up snooze-cuda
 ```
 
 ---
@@ -325,7 +363,7 @@ SnoozeML is actively evolving. The following initiatives represent planned archi
 ## Platform Compatibility
 
 > [!NOTE]
-> **RHEL 8 & Legacy `glibc` Notice:** Prebuilt Linux release binaries are linked against `ort-sys` prebuilt archives requiring `glibc >= 2.38` (e.g., Ubuntu 24.04+, Fedora 39+, Debian 13+). **RHEL 8 (`glibc 2.28`) is not supported by prebuilt binaries for the moment**—on RHEL 8 or older distributions, please either deploy via the official Docker images or build from source without prebuilt ONNX Runtime static binaries (e.g., `cargo build --release --no-default-features --features candle-backend,tree-backend,worker-backend,streams-all` or linking a system `libonnxruntime`).
+> **RHEL 8 & Legacy `glibc` Notice:** Prebuilt Linux release binaries are linked against `ort-sys` prebuilt archives requiring `glibc >= 2.38` (e.g., Ubuntu 24.04+, Fedora 39+, Debian 13+). **RHEL 8 (`glibc 2.28`) is not supported by prebuilt binaries for the moment**—on RHEL 8 or older distributions, please either deploy via the official container images (`ghcr.io/snoozeml/snoozeml:cpu` or `:cuda`) or build from source without prebuilt ONNX Runtime static binaries (e.g., `cargo build --release --no-default-features --features candle-backend,tree-backend,worker-backend,streams-all` or linking a system `libonnxruntime`).
 
 ---
 

@@ -132,7 +132,7 @@ version: "3.8"
 
 services:
   snoozeml:
-    image: snoozeml:latest
+    image: ghcr.io/snoozeml/snoozeml:latest
     ports:
       - "8080:8080"   # HTTP REST & Prometheus metrics
       - "50051:50051" # Binary gRPC inference & health checking

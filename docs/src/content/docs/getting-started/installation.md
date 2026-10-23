@@ -128,22 +128,29 @@ Once compilation completes, the standalone executable is placed at:
 
 ---
 
-## 5. Container Image Build (Docker)
+## 5. Official Container Images (Docker & GHCR)
 
-SnoozeML includes a high-performance multi-stage Docker build pipeline powered by [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) on Debian Trixie (`lukemathwalker/cargo-chef:latest-rust-1-slim-trixie` and `debian:trixie-slim`). It caches all third-party crate dependencies in a dedicated layer (`cargo chef cook`), allowing near-instant rebuilds (~0.3s cached) while generating a lean, non-root runtime image (~200MB).
+Official prebuilt, hardened multi-arch container images are published to the **GitHub Container Registry (`ghcr.io`)** on every release tag. Three deployment tiers are available across **AMD64 (`x86_64`)** and **ARM64 (`aarch64`)** architectures:
 
-### Building the Image
+| Flavor | Primary Image Reference | Supported Platforms | Features & Backends |
+| :--- | :--- | :--- | :--- |
+| **`cuda` (Default)** | `ghcr.io/snoozeml/snoozeml:latest`<br/>`ghcr.io/snoozeml/snoozeml:cuda` | `linux/amd64` | Full GPU-accelerated runtime with NVIDIA CUDA and TensorRT execution providers, Candle Safetensors, Tree models, bundled Python worker runtime (`numpy`, `requests`, `snoozeml`), and all streaming brokers (`streams-all`). |
+| **`cpu`** | `ghcr.io/snoozeml/snoozeml:cpu` | `linux/amd64`<br/>`linux/arm64` | Standard CPU container with all model backends, bundled Python worker runtime, and all streaming brokers. Ideal for cloud CPU instances (~280 MB). |
+| **`slim`** | `ghcr.io/snoozeml/snoozeml:slim`<br/>`ghcr.io/snoozeml/snoozeml:lite` | `linux/amd64`<br/>`linux/arm64` | Ultra-lean (~120 MB) pure Rust runtime. Includes ONNX Runtime (CPU), Candle, and Tree backends with zero Python dependencies for minimal CVE attack surface. |
 
-Compile the image locally:
+### Pulling from GitHub Container Registry
+
+Pull the official image flavor matching your hardware:
 
 ```bash
-# On Linux / macOS (Bash / Zsh):
-DOCKER_BUILDKIT=1 docker build -t snoozeml:latest .
+# 1. Pull the default GPU container (CUDA + TensorRT + Python workers)
+docker pull ghcr.io/snoozeml/snoozeml:latest
 
-# On Windows (PowerShell):
-$env:DOCKER_BUILDKIT=1; docker build -t snoozeml:latest .
-# Or simply (BuildKit is enabled by default in modern Docker Desktop):
-docker build -t snoozeml:latest .
+# 2. Or pull the standard CPU container
+docker pull ghcr.io/snoozeml/snoozeml:cpu
+
+# 3. Or pull the minimal slim container (~120 MB, zero Python)
+docker pull ghcr.io/snoozeml/snoozeml:slim
 ```
 
 ### Running with Docker
@@ -156,7 +163,19 @@ docker run -d \
   -p 8080:8080 \
   -p 50051:50051 \
   -v $(pwd)/models:/models:ro \
-  snoozeml:latest
+  ghcr.io/snoozeml/snoozeml:latest
+```
+
+For GPU acceleration with NVIDIA CUDA, pass `--gpus all` (requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)):
+
+```bash
+docker run -d \
+  --name snoozeml-gpu \
+  --gpus all \
+  -p 8080:8080 \
+  -p 50051:50051 \
+  -v $(pwd)/models:/models:ro \
+  ghcr.io/snoozeml/snoozeml:latest
 ```
 
 Run in demonstration mode with the built-in mock model (no model files required):
@@ -165,7 +184,24 @@ Run in demonstration mode with the built-in mock model (no model files required)
 docker run -it --rm \
   -p 8080:8080 \
   -p 50051:50051 \
-  snoozeml:latest serve --demo
+  ghcr.io/snoozeml/snoozeml:latest serve --demo
+```
+
+### Building the Image Locally
+
+SnoozeML includes a high-performance multi-stage Docker build pipeline powered by [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) on Debian Trixie (`lukemathwalker/cargo-chef:latest-rust-1-slim-trixie` and `debian:trixie-slim`). It caches all third-party crate dependencies in a dedicated layer (`cargo chef cook`), allowing near-instant rebuilds (~0.3s cached).
+
+Compile your preferred target:
+
+```bash
+# Default GPU build (CUDA + TensorRT + Python workers)
+docker build --target cuda -t snooze-ml:cuda .
+
+# Standard CPU build (All backends + Python workers)
+docker build --target cpu -t snooze-ml:cpu .
+
+# Slim build (~120 MB pure Rust, zero Python)
+docker build --target slim -t snooze-ml:slim .
 ```
 
 ### Using Docker Compose
@@ -173,7 +209,11 @@ docker run -it --rm \
 A standard `docker-compose.yml` is provided at the root of the repository:
 
 ```bash
-docker compose up -d
+# Launch the default slim service
+docker compose up snooze-slim
+
+# Or launch the CUDA GPU service
+docker compose up snooze-cuda
 ```
 
 ---
@@ -221,7 +261,7 @@ Verify that the CLI is accessible and inspect the available commands:
 snooze --help
 
 # Or via Docker:
-docker run --rm snoozeml:latest --help
+docker run --rm ghcr.io/snoozeml/snoozeml:latest --help
 ```
 
 You should see output similar to:

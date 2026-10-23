@@ -87,31 +87,46 @@ sudo systemctl status snoozeml
 
 ## 2. Container Deployment (Docker & Kubernetes)
 
-SnoozeML provides an optimized, multi-target Dockerfile supporting both **AMD64 (`x86_64`)** and **ARM64 (`aarch64`)** across three distinct deployment tiers:
+Official container images are automatically built and published to the **GitHub Container Registry (`ghcr.io`)** on every release tag. Three deployment tiers are provided across **AMD64 (`x86_64`)** and **ARM64 (`aarch64`)**:
 
-### 2.1 Multi-Target Build Matrix
+### 2.1 Official Container Image Matrix
 
-| Image Target | Features & Backends | Python Support | Architectures | Best For |
-| :--- | :--- | :--- | :--- | :--- |
-| **`slim`** | ONNX Runtime (CPU), Candle Safetensors, Tree models, Base streams | ❌ None (zero Python runtime) | `linux/amd64`<br/>`linux/arm64` | Edge gateways, microservices, minimal CVE surface (~144 MB) |
-| **`cpu`** | All backends, all streaming brokers (`streams-all`), Python worker | ✅ Lean Python 3 + venv (`numpy`) | `linux/amd64`<br/>`linux/arm64` | Standard CPU deployments, custom Python workers (~344 MB) |
-| **`cuda`** | All backends, ONNX CUDA (`ort?/cuda`), TensorRT, streams, Python worker | ✅ Lean Python 3 + venv (`numpy`) | `linux/amd64` | GPU servers (NVIDIA RTX / A100 / H100 / L4, ~426 MB) |
+| Target / Flavor | Official GHCR Image Tags | Supported Architectures | Features & Backends | Python Support | Best For |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`cuda` (Default)** | `ghcr.io/snoozeml/snoozeml:latest`<br/>`ghcr.io/snoozeml/snoozeml:cuda`<br/>`ghcr.io/snoozeml/snoozeml:full`<br/>`ghcr.io/snoozeml/snoozeml:<version>` | `linux/amd64` | All backends, ONNX CUDA + TensorRT execution providers, all stream brokers (`streams-all`) | ✅ Python 3 + NumPy + Requests + bundled `snoozeml` SDK | NVIDIA GPU servers (RTX / A100 / H100 / L4) |
+| **`cpu`** | `ghcr.io/snoozeml/snoozeml:cpu`<br/>`ghcr.io/snoozeml/snoozeml:<version>-cpu` | `linux/amd64`<br/>`linux/arm64` | All backends (ONNX CPU, Candle, Tree), all stream brokers (`streams-all`) | ✅ Python 3 + NumPy + Requests + bundled `snoozeml` SDK | Standard CPU cloud instances, custom Python workers (~280 MB) |
+| **`slim`** | `ghcr.io/snoozeml/snoozeml:slim`<br/>`ghcr.io/snoozeml/snoozeml:lite`<br/>`ghcr.io/snoozeml/snoozeml:<version>-slim` | `linux/amd64`<br/>`linux/arm64` | ONNX Runtime (CPU), Candle Safetensors, Tree models, Base streams | ❌ None (zero Python runtime) | Edge gateways, microservices, minimal CVE surface (~120 MB) |
 
 > [!NOTE]
-> All targets utilize [`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef) to cache compiled dependency layers independently, ensuring lightning-fast incremental builds when source code changes.
+> All container builds utilize [`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef) to cache compiled dependency layers independently, ensuring lightning-fast incremental builds when source code changes.
 
-### 2.2 Building Containers
+### 2.2 Pulling from GitHub Container Registry
 
-Build your desired target using Docker BuildKit:
+Pull prebuilt images directly from GHCR:
 
 ```bash
-# 1. Build the lightweight Slim target
+# 1. Pull the default CUDA GPU container
+docker pull ghcr.io/snoozeml/snoozeml:latest
+
+# 2. Pull the standard CPU container
+docker pull ghcr.io/snoozeml/snoozeml:cpu
+
+# 3. Pull the slim pure-Rust container
+docker pull ghcr.io/snoozeml/snoozeml:slim
+```
+
+### 2.3 Building Containers Locally
+
+Build your desired target locally using Docker BuildKit:
+
+```bash
+# 1. Build the lightweight Slim target (~120 MB)
 docker build --target slim -t snooze-ml:slim .
 
-# 2. Build the standard CPU + Python target
+# 2. Build the standard CPU + Python target (~280 MB)
 docker build --target cpu -t snooze-ml:cpu .
 
-# 3. Build the CUDA GPU target
+# 3. Build the default CUDA GPU target
 docker build --target cuda -t snooze-ml:cuda .
 ```
 
@@ -130,7 +145,7 @@ docker buildx bake cpu
 docker buildx bake all
 ```
 
-### 2.3 Production Docker Run Examples
+### 2.4 Production Docker Run Examples
 
 #### Slim Production Runner (CPU, read-only filesystem)
 ```bash
@@ -144,7 +159,7 @@ docker run -d \
   -p 50051:50051 \
   -v /var/data/snoozeml/models:/models:ro \
   -e RUST_LOG=info \
-  snooze-ml:slim
+  ghcr.io/snoozeml/snoozeml:slim
 ```
 
 #### CUDA GPU Runner
@@ -157,10 +172,10 @@ docker run -d \
   -p 50051:50051 \
   -v /var/data/snoozeml/models:/models:ro \
   -e RUST_LOG=info \
-  snooze-ml:cuda
+  ghcr.io/snoozeml/snoozeml:latest
 ```
 
-### 2.4 Multi-Service Docker Compose (`docker-compose.yml`)
+### 2.5 Multi-Service Docker Compose (`docker-compose.yml`)
 
 Use the repository's root [`docker-compose.yml`](docker-compose.yml) to run any variant locally:
 

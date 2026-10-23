@@ -3,7 +3,7 @@ services:
     build:
       context: .
       target: slim
-    image: snooze-ml:slim
+    image: ghcr.io/snoozeml/snoozeml:slim
     container_name: snooze-slim
     ports:
       - "8080:8080"
@@ -18,7 +18,7 @@ services:
     build:
       context: .
       target: cpu
-    image: snooze-ml:cpu
+    image: ghcr.io/snoozeml/snoozeml:cpu
     container_name: snooze-cpu
     ports:
       - "8081:8080"
@@ -34,7 +34,7 @@ services:
     build:
       context: .
       target: cuda
-    image: snooze-ml:cuda
+    image: ghcr.io/snoozeml/snoozeml:cuda
     container_name: snooze-cuda
     ports:
       - "8082:8080"
