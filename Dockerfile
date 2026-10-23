@@ -47,7 +47,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     mkdir -p /app/dist/bin /app/dist/lib && \
     touch /app/dist/lib/.keep && \
     cp /app/target/release/snooze /app/dist/bin/snooze && \
-    find /app/target/release -maxdepth 4 -name "libonnxruntime*.so*" -exec cp -P -t /app/dist/lib/ {} +
+    find /app/target/release -maxdepth 1 -name "libonnxruntime*.so*" -exec cp -P -t /app/dist/lib/ {} +
 
 # ==============================================================================
 # 3B. BUILDER — CPU (All backends + CPU Python worker + all streams)
@@ -71,7 +71,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     mkdir -p /app/dist/bin /app/dist/lib && \
     touch /app/dist/lib/.keep && \
     cp /app/target/release/snooze /app/dist/bin/snooze && \
-    find /app/target/release -maxdepth 4 -name "libonnxruntime*.so*" -exec cp -P -t /app/dist/lib/ {} +
+    find /app/target/release -maxdepth 1 -name "libonnxruntime*.so*" -exec cp -P -t /app/dist/lib/ {} +
 
 # ==============================================================================
 # 3C. BUILDER — CUDA (All backends + CUDA/TensorRT GPU + Python worker + all streams)
@@ -95,7 +95,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     mkdir -p /app/dist/bin /app/dist/lib && \
     touch /app/dist/lib/.keep && \
     cp /app/target/release/snooze /app/dist/bin/snooze && \
-    find /app/target/release -maxdepth 4 -name "libonnxruntime*.so*" -exec cp -P -t /app/dist/lib/ {} +
+    find /app/target/release -maxdepth 1 -name "libonnxruntime*.so*" -exec cp -P -t /app/dist/lib/ {} +
 
 # ==============================================================================
 # 4. SHARED BASE RUNTIME (Common OS packages, user, volumes & healthcheck)
