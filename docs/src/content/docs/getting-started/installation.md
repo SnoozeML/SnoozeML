@@ -160,6 +160,7 @@ Serve models from a local host directory:
 ```bash
 docker run -d \
   --name snoozeml \
+  # --gpus all \                 # Pass GPU to container (NVIDIA Container Toolkit required)
   -p 8080:8080 \
   -p 50051:50051 \
   -v $(pwd)/models:/models:ro \

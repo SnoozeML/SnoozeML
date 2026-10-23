@@ -315,6 +315,7 @@ docker pull ghcr.io/snoozeml/snoozeml:slim
 # Launch container with local models directory mounted:
 docker run -d \
   --name snoozeml \
+  # --gpus all \                 # Pass GPU to container (NVIDIA Container Toolkit required)
   -p 8080:8080 -p 50051:50051 \
   -v ./models:/models:ro \
   ghcr.io/snoozeml/snoozeml:latest
