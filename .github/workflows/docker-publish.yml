@@ -1,0 +1,221 @@
+name: Publish Container Images (GHCR)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Optional release tag to publish (leave empty for build-only verification)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ============================================================================
+  # JOB 1: Build & Smoke-Test Images on Native AMD64 & ARM64 Runners
+  # Uses native x86_64 and ARM64 runners to avoid slow QEMU emulation during
+  # Rust + ONNX Runtime compilation.
+  # ============================================================================
+  build-images:
+    name: Build (${{ matrix.target }} - ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Default Full Image (CUDA + TensorRT + Python Worker + All Streams)
+          - target: cuda
+            os: ubuntu-24.04
+            platform: linux/amd64
+            arch: amd64
+
+          # Standard CPU Image (All Backends + Python Worker + All Streams)
+          - target: cpu
+            os: ubuntu-24.04
+            platform: linux/amd64
+            arch: amd64
+          - target: cpu
+            os: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+
+          # Lite / Slim Image (Pure Rust + ONNX Runtime, Zero Python)
+          - target: slim
+            os: ubuntu-24.04
+            platform: linux/amd64
+            arch: amd64
+          - target: slim
+            os: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Normalize image name to lowercase
+        id: image
+        run: |
+          echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build container image for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: snooze-ci:${{ matrix.target }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ matrix.arch }}
+
+      - name: Smoke test container image
+        run: |
+          docker run --rm snooze-ci:${{ matrix.target }}-${{ matrix.arch }} --version
+
+      - name: Log in to GitHub Container Registry
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image by digest to GHCR
+        id: push_digest
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
+
+      - name: Export image digest for manifest creation
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+        run: |
+          mkdir -p /tmp/digests/${{ matrix.target }}
+          digest="${{ steps.push_digest.outputs.digest }}"
+          touch "/tmp/digests/${{ matrix.target }}/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.target }}-${{ matrix.arch }}
+          path: /tmp/digests/${{ matrix.target }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ============================================================================
+  # JOB 2: Create & Publish Tagged Manifests to GHCR
+  # Assigns versioned and rolling tags to each flavor, making 'cuda' the default.
+  # ============================================================================
+  publish-manifests:
+    name: Publish Manifest (${{ matrix.target }})
+    needs: build-images
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: cuda
+            is_default: true
+          - target: cpu
+            is_default: false
+          - target: slim
+            is_default: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Normalize image name to lowercase
+        id: image
+        run: |
+          echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Download digest artifacts for ${{ matrix.target }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.target }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags & OCI labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=false
+          tags: |
+            # Rolling flavor tags (:cuda, :cpu, :slim)
+            type=raw,value=${{ matrix.target }}
+            # Friendly aliases (:full for cuda, :lite for slim)
+            type=raw,value=full,enable=${{ matrix.target == 'cuda' }}
+            type=raw,value=lite,enable=${{ matrix.target == 'slim' }}
+            # Default tags (:latest, :0.1.1, :0.1) assigned to 'cuda'
+            type=raw,value=latest,enable=${{ matrix.is_default }}
+            type=semver,pattern={{version}},value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.is_default }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.is_default }}
+            # Explicit versioned flavor tags (:0.1.1-cuda, :0.1.1-cpu, :0.1.1-slim)
+            type=semver,pattern={{version}}-${{ matrix.target }},value=${{ inputs.tag_name || github.ref_name }}
+            type=semver,pattern={{major}}.{{minor}}-${{ matrix.target }},value=${{ inputs.tag_name || github.ref_name }}
+            # Explicit versioned alias tags (:0.1.1-full, :0.1.1-lite)
+            type=semver,pattern={{version}}-full,value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.target == 'cuda' }}
+            type=semver,pattern={{version}}-lite,value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.target == 'slim' }}
+
+      - name: Create and push manifest list
+        working-directory: /tmp/digests
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          DOCKER_META_TAGS: ${{ steps.meta.outputs.tags }}
+          DOCKER_META_LABELS: ${{ steps.meta.outputs.labels }}
+        run: |
+          tag_args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && tag_args+=("-t" "$tag")
+          done <<< "$DOCKER_META_TAGS"
+
+          annotation_args=()
+          while IFS= read -r label; do
+            [[ -n "$label" ]] && annotation_args+=("--annotation" "index:$label")
+          done <<< "$DOCKER_META_LABELS"
+
+          digest_refs=()
+          for digest_file in *; do
+            digest_refs+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
+
+          docker buildx imagetools create \
+            "${tag_args[@]}" \
+            "${annotation_args[@]}" \
+            "${digest_refs[@]}"
+
+      - name: Inspect published manifest
+        run: |
+          docker buildx imagetools inspect ${{ steps.image.outputs.name }}:${{ matrix.target }}

@@ -1,13 +1,17 @@
+variable "IMAGE_NAME" {
+  default = "snooze-ml"
+}
+
 variable "TAG" {
   default = "latest"
 }
 
 variable "VERSION" {
-  default = "0.1.0"
+  default = "0.1.1"
 }
 
 group "default" {
-  targets = ["cpu"]
+  targets = ["cuda"]
 }
 
 group "all" {
@@ -26,8 +30,10 @@ target "slim" {
   inherits = ["base"]
   target = "slim"
   tags = [
-    "snooze-ml:slim",
-    "snooze-ml:${VERSION}-slim"
+    "${IMAGE_NAME}:slim",
+    "${IMAGE_NAME}:lite",
+    "${IMAGE_NAME}:${VERSION}-slim",
+    "${IMAGE_NAME}:${VERSION}-lite"
   ]
 }
 
@@ -35,9 +41,8 @@ target "cpu" {
   inherits = ["base"]
   target = "cpu"
   tags = [
-    "snooze-ml:cpu",
-    "snooze-ml:${TAG}",
-    "snooze-ml:${VERSION}"
+    "${IMAGE_NAME}:cpu",
+    "${IMAGE_NAME}:${VERSION}-cpu"
   ]
 }
 
@@ -48,8 +53,11 @@ target "cuda" {
     "linux/amd64"
   ]
   tags = [
-    "snooze-ml:cuda",
-    "snooze-ml:${TAG}-cuda",
-    "snooze-ml:${VERSION}-cuda"
+    "${IMAGE_NAME}:${TAG}",
+    "${IMAGE_NAME}:${VERSION}",
+    "${IMAGE_NAME}:cuda",
+    "${IMAGE_NAME}:full",
+    "${IMAGE_NAME}:${VERSION}-cuda",
+    "${IMAGE_NAME}:${VERSION}-full"
   ]
 }
