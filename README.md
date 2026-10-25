@@ -356,7 +356,9 @@ SnoozeML is actively evolving. The following initiatives represent planned archi
 * **WASM & Native Plugins**: Zero-copy in-process pre/post-processing via `cdylib` and WebAssembly (Wasmtime/WASI) without Python IPC overhead.
 * **Edge & Embedded Targets**: Cross-compilation for RISC-V/ARM64, strict host memory ceilings, and WebGPU (`wgpu`) / Vulkan / Apple Metal acceleration.
 * **KServe v2 Data Plane Parity**: Drop-in REST/gRPC protocol compatibility for existing cloud-native ML meshes.
-* **Distributed Fleet Clustering**: Peer-to-peer state sync and cluster-wide scale-to-zero LRU placement.
+* **Model Versioning**: Multi-version model coexistence, semantic version pinning, and route aliasing.
+* **Hot-Swap & Canary Deployments**: Zero-downtime model reloading and dynamic traffic splitting for gradual rollouts.
+* **Rust Support for System 1 Models**: Expanded native Rust architectures and kernels for fast decision models.
 * **In-Engine DAG Pipelines**: Multi-model chaining with zero serialization hops between stages.
 
 ---
