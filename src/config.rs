@@ -1115,8 +1115,9 @@ impl ModelDirectoryConfig {
                 continue;
             }
 
+            let is_mock = entry.path.starts_with("mock:");
             let resolved_path = Self::resolve_path(models_dir, &entry.path);
-            if !resolved_path.exists() {
+            if !is_mock && !resolved_path.exists() {
                 tracing::warn!(
                     model_id = %entry.id,
                     path = %resolved_path.display(),
@@ -1177,7 +1178,11 @@ impl ModelDirectoryConfig {
 
             result.push(ModelConfig {
                 id: entry.id.clone(),
-                onnx_path: resolved_path.to_string_lossy().to_string(),
+                onnx_path: if is_mock {
+                    entry.path.clone()
+                } else {
+                    resolved_path.to_string_lossy().to_string()
+                },
                 idle_timeout,
                 max_batch_size,
                 max_batch_delay,

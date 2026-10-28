@@ -368,7 +368,17 @@ pub async fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             let resolved_dir = models_dir
                 .or_else(|| std::env::var(crate::config::ENV_MODELS_DIR).ok())
-                .or_else(|| std::env::var(ENV_MODELS_DIR_FALLBACK).ok());
+                .or_else(|| std::env::var(ENV_MODELS_DIR_FALLBACK).ok())
+                .or_else(|| {
+                    config.as_deref().map(|c| {
+                        Path::new(c)
+                            .parent()
+                            .filter(|p| !p.as_os_str().is_empty())
+                            .unwrap_or_else(|| Path::new("."))
+                            .to_string_lossy()
+                            .to_string()
+                    })
+                });
             let mut file_auth: Option<AuthConfig> = None;
             let mut configured_streams: Vec<crate::config::StreamBindingConfig> = Vec::new();
 

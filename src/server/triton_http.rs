@@ -8,7 +8,7 @@ use crate::types::{InferenceError, ModelState, TensorPayload};
 use axum::{
     body::Bytes,
     extract::{Extension, Path, State},
-    http::StatusCode,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::from_fn,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -27,11 +27,12 @@ pub struct TritonHttpInputTensor {
     pub shape: Vec<i64>,
     /// Data type identifier (e.g. `"FP32"`, `"INT32"`, `"INT64"`, `"FP64"`, `"BOOL"`).
     pub datatype: String,
-    /// Optional tensor-level parameters.
+    /// Optional tensor-level parameters (such as `"binary_data_size"`).
     #[serde(default)]
     pub parameters: HashMap<String, serde_json::Value>,
-    /// Flattened or nested JSON array containing tensor elements.
-    pub data: serde_json::Value,
+    /// Flattened or nested JSON array containing tensor elements (omitted when binary extension is used).
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
 }
 
 /// Requested output tensor filter in an OIP v2 HTTP inference request.
@@ -39,7 +40,7 @@ pub struct TritonHttpInputTensor {
 pub struct TritonHttpRequestedOutput {
     /// Name of the requested output tensor.
     pub name: String,
-    /// Optional output parameters.
+    /// Optional output parameters (such as `"binary_data": true`).
     #[serde(default)]
     pub parameters: HashMap<String, serde_json::Value>,
 }
@@ -50,7 +51,7 @@ pub struct TritonHttpInferRequest {
     /// Optional request identifier echoed in the response.
     #[serde(default)]
     pub id: Option<String>,
-    /// Optional request-level parameters.
+    /// Optional request-level parameters (such as `"binary_data_output": true`).
     #[serde(default)]
     pub parameters: HashMap<String, serde_json::Value>,
     /// Input tensors.
@@ -65,12 +66,16 @@ pub struct TritonHttpInferRequest {
 pub struct TritonHttpOutputTensor {
     /// Name of the output tensor.
     pub name: String,
-    /// Data type identifier (`"FP32"`).
+    /// Data type identifier (e.g. `"FP32"`).
     pub datatype: String,
     /// Dimensions of the output tensor.
     pub shape: Vec<usize>,
-    /// Flattened tensor data in row-major order.
-    pub data: Vec<f32>,
+    /// Optional tensor parameters (such as `"binary_data_size"` when binary output is used).
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub parameters: HashMap<String, serde_json::Value>,
+    /// Flattened tensor data in row-major order (omitted when binary output is used).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 /// Outgoing JSON payload for OIP v2 HTTP inference.
@@ -145,6 +150,109 @@ fn flatten_json_tensor_data(
     }
 }
 
+/// Decodes a raw little-endian binary tensor slice into `Vec<f32>`.
+fn decode_http_binary_tensor(
+    tensor_name: &str,
+    datatype: &str,
+    raw: &[u8],
+    expected_elements: usize,
+) -> Result<Vec<f32>, InferenceError> {
+    match datatype {
+        "FP32" => {
+            let expected_bytes = expected_elements.checked_mul(4).ok_or_else(|| {
+                InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' byte length overflows usize"
+                ))
+            })?;
+            if raw.len() != expected_bytes {
+                return Err(InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' binary_data length {} does not match expected {expected_bytes} bytes",
+                    raw.len()
+                )));
+            }
+            Ok(raw
+                .chunks_exact(4)
+                .map(|b| {
+                    let arr: [u8; 4] = b.try_into().unwrap_or([0; 4]);
+                    f32::from_le_bytes(arr)
+                })
+                .collect())
+        }
+        "FP64" => {
+            let expected_bytes = expected_elements.checked_mul(8).ok_or_else(|| {
+                InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' byte length overflows usize"
+                ))
+            })?;
+            if raw.len() != expected_bytes {
+                return Err(InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' binary_data length {} does not match expected {expected_bytes} bytes",
+                    raw.len()
+                )));
+            }
+            Ok(raw
+                .chunks_exact(8)
+                .map(|b| {
+                    let arr: [u8; 8] = b.try_into().unwrap_or([0; 8]);
+                    f64::from_le_bytes(arr) as f32
+                })
+                .collect())
+        }
+        "INT32" => {
+            let expected_bytes = expected_elements.checked_mul(4).ok_or_else(|| {
+                InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' byte length overflows usize"
+                ))
+            })?;
+            if raw.len() != expected_bytes {
+                return Err(InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' binary_data length {} does not match expected {expected_bytes} bytes",
+                    raw.len()
+                )));
+            }
+            Ok(raw
+                .chunks_exact(4)
+                .map(|b| {
+                    let arr: [u8; 4] = b.try_into().unwrap_or([0; 4]);
+                    i32::from_le_bytes(arr) as f32
+                })
+                .collect())
+        }
+        "INT64" => {
+            let expected_bytes = expected_elements.checked_mul(8).ok_or_else(|| {
+                InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' byte length overflows usize"
+                ))
+            })?;
+            if raw.len() != expected_bytes {
+                return Err(InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' binary_data length {} does not match expected {expected_bytes} bytes",
+                    raw.len()
+                )));
+            }
+            Ok(raw
+                .chunks_exact(8)
+                .map(|b| {
+                    let arr: [u8; 8] = b.try_into().unwrap_or([0; 8]);
+                    i64::from_le_bytes(arr) as f32
+                })
+                .collect())
+        }
+        "BOOL" | "UINT8" => {
+            if raw.len() != expected_elements {
+                return Err(InferenceError::InvalidInput(format!(
+                    "Tensor '{tensor_name}' binary_data length {} does not match expected {expected_elements} bytes",
+                    raw.len()
+                )));
+            }
+            Ok(raw.iter().map(|&b| f32::from(b)).collect())
+        }
+        other => Err(InferenceError::InvalidInput(format!(
+            "Unsupported Triton HTTP binary datatype '{other}' for tensor '{tensor_name}'"
+        ))),
+    }
+}
+
 /// Builds public OIP v2 health routes (`/v2/health/live`, `/v2/health/ready`).
 pub fn create_triton_public_routes() -> Router<AppState> {
     Router::new()
@@ -184,7 +292,7 @@ pub fn create_triton_readonly_routes() -> Router<AppState> {
         .layer(from_fn(crate::auth::require_role(Role::ReadOnly)))
 }
 
-/// Builds `Role::Inference` OIP v2 inference routes.
+/// Builds `Role::Inference` OIP v2 HTTP inference routes.
 pub fn create_triton_infer_routes() -> Router<AppState> {
     Router::new()
         .route("/v2/models/:model_name/infer", post(v2_model_infer_handler))
@@ -192,11 +300,10 @@ pub fn create_triton_infer_routes() -> Router<AppState> {
             "/v2/models/:model_name/versions/:version/infer",
             post(v2_model_version_infer_handler),
         )
-        .layer(axum::extract::DefaultBodyLimit::max(128 * 1024 * 1024))
         .layer(from_fn(crate::auth::require_role(Role::Inference)))
 }
 
-/// Builds `Role::Admin` OIP v2 repository load/unload and out-of-scope `501 Not Implemented` routes.
+/// Builds `Role::Admin` OIP v2 repository management and out-of-scope routes.
 pub fn create_triton_admin_routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -210,6 +317,10 @@ pub fn create_triton_admin_routes() -> Router<AppState> {
         .route(
             "/v2/systemsharedmemory/status",
             get(v2_unimplemented_handler).post(v2_unimplemented_handler),
+        )
+        .route(
+            "/v2/systemsharedmemory/region/:name/status",
+            get(v2_unimplemented_handler),
         )
         .route(
             "/v2/systemsharedmemory/region/:name/register",
@@ -228,6 +339,10 @@ pub fn create_triton_admin_routes() -> Router<AppState> {
             get(v2_unimplemented_handler).post(v2_unimplemented_handler),
         )
         .route(
+            "/v2/cudasharedmemory/region/:name/status",
+            get(v2_unimplemented_handler),
+        )
+        .route(
             "/v2/cudasharedmemory/region/:name/register",
             post(v2_unimplemented_handler),
         )
@@ -244,7 +359,15 @@ pub fn create_triton_admin_routes() -> Router<AppState> {
             get(v2_unimplemented_handler).post(v2_unimplemented_handler),
         )
         .route(
+            "/v2/trace/setting",
+            get(v2_unimplemented_handler).post(v2_unimplemented_handler),
+        )
+        .route(
             "/v2/models/:model_name/trace",
+            get(v2_unimplemented_handler).post(v2_unimplemented_handler),
+        )
+        .route(
+            "/v2/models/:model_name/trace/setting",
             get(v2_unimplemented_handler).post(v2_unimplemented_handler),
         )
         .route(
@@ -428,19 +551,17 @@ async fn build_model_config_json(
                 "dims": [-1]
             }
         ],
-        "dynamic_batching": {
-            "preferred_batch_size": [cfg.max_batch_size],
-            "max_queue_delay_microseconds": delay_us,
-            "preserve_ordering": true
-        },
         "instance_group": [
             {
-                "name": format!("{}_0", cfg.id),
+                "name": format!("{}_default", cfg.id),
                 "kind": kind,
                 "count": replica_count
             }
         ],
-        "default_model_filename": cfg.onnx_path
+        "dynamic_batching": {
+            "preferred_batch_size": [cfg.max_batch_size],
+            "max_queue_delay_microseconds": delay_us
+        }
     })))
 }
 
@@ -448,6 +569,12 @@ fn format_group_stats_json(
     group: &ModelReplicaGroup,
     snap: &crate::model::ModelStatsSnapshot,
 ) -> serde_json::Value {
+    let total_count = snap.success_count.saturating_add(snap.fail_count);
+    let total_ns = snap
+        .queue_ns
+        .saturating_add(snap.compute_infer_ns)
+        .max(snap.success_ns);
+
     serde_json::json!({
         "name": group.id(),
         "version": "1",
@@ -455,44 +582,77 @@ fn format_group_stats_json(
         "inference_count": snap.inference_count,
         "execution_count": snap.execution_count,
         "inference_stats": {
-            "success": { "count": snap.success_count, "ns": snap.success_ns },
-            "fail": { "count": snap.fail_count, "ns": snap.fail_ns },
-            "queue": { "count": snap.success_count, "ns": snap.queue_ns },
-            "compute_input": { "count": 0, "ns": 0 },
-            "compute_infer": { "count": snap.execution_count, "ns": snap.compute_infer_ns },
-            "compute_output": { "count": 0, "ns": 0 },
-            "cache_hit": { "count": 0, "ns": 0 },
-            "cache_miss": { "count": 0, "ns": 0 }
+            "success": {
+                "count": snap.success_count,
+                "ns": snap.success_ns
+            },
+            "fail": {
+                "count": snap.fail_count,
+                "ns": snap.fail_ns
+            },
+            "queue": {
+                "count": total_count,
+                "ns": snap.queue_ns
+            },
+            "compute_input": {
+                "count": total_count,
+                "ns": 0
+            },
+            "compute_infer": {
+                "count": total_count,
+                "ns": snap.compute_infer_ns
+            },
+            "compute_output": {
+                "count": total_count,
+                "ns": 0
+            },
+            "cache_hit": {
+                "count": 0,
+                "ns": 0
+            },
+            "cache_miss": {
+                "count": 0,
+                "ns": 0
+            }
         },
-        "batch_stats": []
+        "batch_stats": [
+            {
+                "batch_size": 1,
+                "compute_input": { "count": snap.execution_count, "ns": 0 },
+                "compute_infer": { "count": snap.execution_count, "ns": total_ns },
+                "compute_output": { "count": snap.execution_count, "ns": 0 }
+            }
+        ]
     })
 }
 
-async fn v2_all_models_stats_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn v2_all_models_stats_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
     let groups = state.registry.all_groups().await;
     let mut stats = Vec::with_capacity(groups.len());
     for group in groups {
         let snap = group.stats_snapshot().await;
         stats.push(format_group_stats_json(&group, &snap));
     }
-    Json(serde_json::json!({ "model_stats": stats }))
+    Ok(Json(serde_json::json!({ "model_stats": stats })))
 }
 
 async fn v2_model_stats_handler(
     State(state): State<AppState>,
     Path(model_name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    build_single_model_stats_json(&state, &model_name).await
+    build_single_model_stats(&state, &model_name).await
 }
 
 async fn v2_model_version_stats_handler(
     State(state): State<AppState>,
     Path((model_name, _version)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    build_single_model_stats_json(&state, &model_name).await
+    build_single_model_stats(&state, &model_name).await
 }
 
-async fn build_single_model_stats_json(
+async fn build_single_model_stats(
     state: &AppState,
     model_name: &str,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -599,28 +759,31 @@ async fn v2_repository_unload_handler(
 async fn v2_model_infer_handler(
     State(state): State<AppState>,
     Path(model_name): Path<String>,
+    headers: HeaderMap,
     auth: Option<Extension<AuthIdentity>>,
-    Json(payload): Json<TritonHttpInferRequest>,
-) -> Result<Json<TritonHttpInferResponse>, AppError> {
-    execute_v2_http_infer(state, model_name, "1".to_string(), auth, payload).await
+    body: Bytes,
+) -> Result<Response, AppError> {
+    execute_v2_http_infer(state, model_name, "1".to_string(), headers, auth, body).await
 }
 
 async fn v2_model_version_infer_handler(
     State(state): State<AppState>,
     Path((model_name, version)): Path<(String, String)>,
+    headers: HeaderMap,
     auth: Option<Extension<AuthIdentity>>,
-    Json(payload): Json<TritonHttpInferRequest>,
-) -> Result<Json<TritonHttpInferResponse>, AppError> {
-    execute_v2_http_infer(state, model_name, version, auth, payload).await
+    body: Bytes,
+) -> Result<Response, AppError> {
+    execute_v2_http_infer(state, model_name, version, headers, auth, body).await
 }
 
 async fn execute_v2_http_infer(
     state: AppState,
     model_name: String,
     model_version: String,
+    headers: HeaderMap,
     auth: Option<Extension<AuthIdentity>>,
-    payload: TritonHttpInferRequest,
-) -> Result<Json<TritonHttpInferResponse>, AppError> {
+    body: Bytes,
+) -> Result<Response, AppError> {
     if !crate::types::is_valid_model_id(&model_name) {
         return Err(AppError::from(InferenceError::InvalidInput(format!(
             "Invalid model name '{model_name}'"
@@ -636,6 +799,43 @@ async fn execute_v2_http_infer(
         );
     }
 
+    // Parse optional Triton HTTP binary extension header (`Inference-Header-Content-Length`)
+    let header_len_opt = match headers.get("Inference-Header-Content-Length") {
+        Some(val) => {
+            let s = val.to_str().map_err(|_| {
+                InferenceError::InvalidInput(
+                    "Invalid Inference-Header-Content-Length header encoding".to_string(),
+                )
+            })?;
+            let parsed = s.trim().parse::<usize>().map_err(|_| {
+                InferenceError::InvalidInput(format!(
+                    "Invalid Inference-Header-Content-Length value '{s}'"
+                ))
+            })?;
+            Some(parsed)
+        }
+        None => None,
+    };
+
+    let (json_slice, binary_tail) = match header_len_opt {
+        Some(hlen) => {
+            let j_slice = body.get(..hlen).ok_or_else(|| {
+                InferenceError::InvalidInput(format!(
+                    "Inference-Header-Content-Length ({hlen}) exceeds request body size ({})",
+                    body.len()
+                ))
+            })?;
+            let b_slice = body.get(hlen..).unwrap_or(&[]);
+            (j_slice, b_slice)
+        }
+        None => (body.as_ref(), &[][..]),
+    };
+
+    let payload: TritonHttpInferRequest = serde_json::from_slice(json_slice).map_err(|e| {
+        InferenceError::InvalidInput(format!("Invalid OIP v2 inference JSON header: {e}"))
+    })?;
+
+    let mut binary_offset = 0usize;
     let mut inputs = Vec::with_capacity(payload.inputs.len());
     for input in payload.inputs {
         if input.shape.is_empty() {
@@ -670,8 +870,43 @@ async fn execute_v2_http_infer(
             })
         })?;
 
-        let mut floats = Vec::with_capacity(total_elements);
-        flatten_json_tensor_data(&input.name, &input.data, &mut floats)?;
+        let floats = if let Some(bin_size_val) = input.parameters.get("binary_data_size") {
+            let bin_size_u64 = bin_size_val.as_u64().ok_or_else(|| {
+                InferenceError::InvalidInput(format!(
+                    "Tensor '{}' binary_data_size parameter must be a non-negative integer",
+                    input.name
+                ))
+            })?;
+            let bin_size = usize::try_from(bin_size_u64).map_err(|_| {
+                InferenceError::InvalidInput(format!(
+                    "Tensor '{}' binary_data_size overflows usize",
+                    input.name
+                ))
+            })?;
+            let end_offset = binary_offset.checked_add(bin_size).ok_or_else(|| {
+                InferenceError::InvalidInput(format!(
+                    "Tensor '{}' binary_data_size offset overflow",
+                    input.name
+                ))
+            })?;
+            let raw_bytes = binary_tail.get(binary_offset..end_offset).ok_or_else(|| {
+                InferenceError::InvalidInput(format!(
+                    "Tensor '{}' binary_data_size ({bin_size}) exceeds binary payload buffer",
+                    input.name
+                ))
+            })?;
+            binary_offset = end_offset;
+            decode_http_binary_tensor(&input.name, &input.datatype, raw_bytes, total_elements)?
+        } else if let Some(ref data_val) = input.data {
+            let mut vec_f32 = Vec::with_capacity(total_elements);
+            flatten_json_tensor_data(&input.name, data_val, &mut vec_f32)?;
+            vec_f32
+        } else {
+            return Err(AppError::from(InferenceError::InvalidInput(format!(
+                "Tensor '{}' is missing both 'data' and 'parameters.binary_data_size'",
+                input.name
+            ))));
+        };
 
         let tensor = TensorPayload::from_shape_vec(input.name, shape_dims, floats)?;
         inputs.push(tensor);
@@ -685,6 +920,22 @@ async fn execute_v2_http_infer(
     match infer_res {
         Ok(output_tensors) => {
             state.metrics.record_inference(true, elapsed_us);
+
+            let global_binary_output = payload
+                .parameters
+                .get("binary_data_output")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+
+            let mut output_binary_flags: HashMap<String, bool> = HashMap::new();
+            for req_out in &payload.outputs {
+                let use_bin = req_out
+                    .parameters
+                    .get("binary_data")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(global_binary_output);
+                output_binary_flags.insert(req_out.name.clone(), use_bin);
+            }
 
             let selected_tensors: Vec<TensorPayload> = if payload.outputs.is_empty() {
                 output_tensors
@@ -707,22 +958,73 @@ async fn execute_v2_http_infer(
             };
 
             let mut outputs = Vec::with_capacity(selected_tensors.len());
+            let mut binary_output_buffer: Vec<u8> = Vec::new();
+            let mut any_binary_output = false;
+
             for tensor in selected_tensors {
                 let (name, shape, data) = tensor.into_components();
-                outputs.push(TritonHttpOutputTensor {
-                    name,
-                    datatype: "FP32".to_string(),
-                    shape,
-                    data,
-                });
+                let use_binary = output_binary_flags
+                    .get(&name)
+                    .copied()
+                    .unwrap_or(global_binary_output);
+
+                if use_binary {
+                    any_binary_output = true;
+                    let encoded: &[u8] = bytemuck::cast_slice(&data);
+                    let mut params = HashMap::new();
+                    params.insert(
+                        "binary_data_size".to_string(),
+                        serde_json::json!(encoded.len()),
+                    );
+                    binary_output_buffer.extend_from_slice(encoded);
+                    outputs.push(TritonHttpOutputTensor {
+                        name,
+                        datatype: "FP32".to_string(),
+                        shape,
+                        parameters: params,
+                        data: None,
+                    });
+                } else {
+                    outputs.push(TritonHttpOutputTensor {
+                        name,
+                        datatype: "FP32".to_string(),
+                        shape,
+                        parameters: HashMap::new(),
+                        data: Some(serde_json::json!(data)),
+                    });
+                }
             }
 
-            Ok(Json(TritonHttpInferResponse {
+            let resp_envelope = TritonHttpInferResponse {
                 model_name,
                 model_version,
                 id: payload.id,
                 outputs,
-            }))
+            };
+
+            if any_binary_output {
+                let json_bytes = serde_json::to_vec(&resp_envelope).map_err(|e| {
+                    InferenceError::Runtime(format!("Failed to serialize OIP v2 header: {e}"))
+                })?;
+                let header_len_str = json_bytes.len().to_string();
+                let mut combined =
+                    Vec::with_capacity(json_bytes.len().saturating_add(binary_output_buffer.len()));
+                combined.extend_from_slice(&json_bytes);
+                combined.extend_from_slice(&binary_output_buffer);
+
+                let mut resp = (StatusCode::OK, combined).into_response();
+                if let Ok(hv) = HeaderValue::from_str(&header_len_str) {
+                    resp.headers_mut()
+                        .insert("Inference-Header-Content-Length", hv);
+                }
+                resp.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/octet-stream"),
+                );
+                Ok(resp)
+            } else {
+                Ok(Json(resp_envelope).into_response())
+            }
         }
         Err(err) => {
             state.metrics.record_inference(false, elapsed_us);
