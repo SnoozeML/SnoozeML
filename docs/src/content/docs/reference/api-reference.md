@@ -315,3 +315,25 @@ Unpins a model, restoring normal scale-to-zero idle sweeping and LRU eviction el
   "model_id": "resnet50"
 }
 ```
+
+
+---
+
+## 3. Open Inference Protocol (OIP v2) & Triton HTTP Endpoints
+
+SnoozeML also supports the standard **Open Inference Protocol (OIP v2)** and **Triton Inference Server** HTTP REST routes (`/v2/...`):
+
+| Method | Endpoint | Required Role | Summary |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/v2/health/live` | **Public** | Server liveness probe (`200 OK`). |
+| `GET` | `/v2/health/ready` | **Public** | Server readiness probe (`200 OK`). |
+| `GET` | `/v2` | `ReadOnly` | Server metadata (`name`, `version`, `extensions`). |
+| `GET` | `/v2/models/{name}[/versions/{ver}]/ready` | `ReadOnly` | Returns `200 OK` if the model is loaded in memory (`Ready`/`Busy`), or `400 Bad Request` if unloaded. |
+| `GET` | `/v2/models/{name}[/versions/{ver}]` | `ReadOnly` | Model metadata (`name`, `versions`, `platform`, `inputs`, `outputs`). |
+| `GET` | `/v2/models/{name}[/versions/{ver}]/config` | `ReadOnly` | Triton model configuration (`max_batch_size`, `dynamic_batching`, `instance_group`). |
+| `GET` | `/v2/models/[{name}[/versions/{ver}]/]stats` | `ReadOnly` | Cumulative per-model inference and batch execution statistics (`model_stats`). |
+| `POST` | `/v2/repository/index` | `ReadOnly` | Lists models in the repository (`READY`, `LOADING`, `UNAVAILABLE`). |
+| `POST` | `/v2/repository/models/{name}/load` | `Admin` | Loads model weights into memory. |
+| `POST` | `/v2/repository/models/{name}/unload` | `Admin` | Unloads all replicas of the model to scale to zero. |
+| `POST` | `/v2/models/{name}[/versions/{ver}]/infer` | `Inference` | Executes OIP v2 tensor inference (supports flat or nested JSON `data` arrays). |
+| `GET/POST` | `/v2/systemsharedmemory/*`, `/v2/cudasharedmemory/*`, `/v2/trace`, `/v2/logging` | `Admin` | Out of scope; returns `501 Not Implemented`. |

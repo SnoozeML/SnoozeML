@@ -3,13 +3,13 @@ title: "gRPC API Reference"
 description: "This page provides the complete technical specification for SnoozeML's **gRPC Inference and Health Checking API**."
 ---
 
-This page provides the complete technical specification for SnoozeML's **gRPC Inference and Health Checking API**.
+This page provides the complete technical specification for SnoozeML's **gRPC Inference and Health Checking API**, including both the native `snoozeml.v1.InferenceService` and the **NVIDIA Triton / Open Inference Protocol v2** (`inference.GRPCInferenceService`).
 
 ---
 
 ## 1. Protocol Buffer Specification
 
-The Protocol Buffer definition is located in the repository at `proto/snoozeml/v1/inference.proto`:
+The native Protocol Buffer definition is located in the repository at `proto/snoozeml/v1/inference.proto`, and the official Triton / Open Inference Protocol v2 definitions are located under `proto/third_party/` (`grpc_service.proto`, `model_config.proto`, `health.proto`):
 
 ```protobuf
 syntax = "proto3";
@@ -21,7 +21,8 @@ service InferenceService {
   // Executes unary inference for a registered model.
   rpc Infer(ModelInferRequest) returns (ModelInferResponse);
 
-  // TODO: Bi-directional StreamInfer will be added in a future phase.
+  // Executes bi-directional streaming inference for a registered model.
+  rpc StreamInfer(stream ModelInferRequest) returns (stream ModelInferResponse);
 }
 
 // Supported tensor element data types.
@@ -83,7 +84,7 @@ message ModelInferResponse {
 
 ### `snoozeml.v1.InferenceService`
 
-Provides synchronous model execution.
+Provides synchronous and streaming model execution.
 
 #### `Infer`
 
@@ -96,6 +97,40 @@ Executes a unary inference pass for the requested model. The model is routed thr
 - **Required Role**: `Inference` (or `Admin`).
 - **Input**: [`ModelInferRequest`](#modelinferrequest)
 - **Output**: [`ModelInferResponse`](#modelinferresponse)
+
+#### `StreamInfer`
+
+```protobuf
+rpc StreamInfer(stream ModelInferRequest) returns (stream ModelInferResponse);
+```
+
+Executes bi-directional streaming inference over a persistent HTTP/2 stream, routing each incoming frame through the dynamic micro-batcher.
+
+- **Required Role**: `Inference` (or `Admin`).
+- **Input**: `stream ModelInferRequest`
+- **Output**: `stream ModelInferResponse`
+
+---
+
+### `inference.GRPCInferenceService` (NVIDIA Triton & Open Inference Protocol v2)
+
+SnoozeML implements the official Triton / Open Inference Protocol v2 gRPC service (`proto/third_party/grpc_service.proto`), enabling drop-in compatibility with `tritonclient.grpc`.
+
+| RPC Method | Required Role | Status / Description |
+| :--- | :--- | :--- |
+| `ServerLive` | **Public** | Returns `live: true`. |
+| `ServerReady` | **Public** | Returns `ready: true`. |
+| `ModelReady` | `ReadOnly` | Returns `ready: true` when the model is registered and has at least one loaded replica (`Ready` or `Busy`). |
+| `ServerMetadata` | `ReadOnly` | Returns server name (`"snooze-ml"`), version, and supported OIP extensions. |
+| `ModelMetadata` | `ReadOnly` | Returns model name, versions (`["1"]`), backend platform, and tensor metadata. |
+| `ModelConfig` | `ReadOnly` | Returns Triton `ModelConfig` mapped from SnoozeML's dynamic batching and replica settings. |
+| `ModelStatistics` | `ReadOnly` | Returns cumulative per-model inference counts, batch execution counts, and nanosecond durations. |
+| `RepositoryIndex` | `ReadOnly` | Lists all registered models (`READY`, `LOADING`, or `UNAVAILABLE` when unloaded via scale-to-zero). |
+| `RepositoryModelLoad` | `Admin` | Preloads or rehydrates model weights into memory. |
+| `RepositoryModelUnload` | `Admin` | Unloads all replicas of a model to scale to zero. |
+| `ModelInfer` | `Inference` | Unary inference supporting both `raw_input_contents` and typed `InferTensorContents`. |
+| `ModelStreamInfer` | `Inference` | Bi-directional streaming inference (`stream ModelInferRequest` -> `stream ModelStreamInferResponse`). |
+| `SystemSharedMemory*`, `CudaSharedMemory*`, `TraceSetting`, `LogSettings` | `Admin` | Out of scope; returns canonical `UNIMPLEMENTED` (`12`) status code. |
 
 ---
 
@@ -112,7 +147,8 @@ rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
 - **Required Role**: **Public** (no authentication required).
 - **Supported Service Names**:
   - `""` (empty string): Overall daemon server status.
-  - `"snoozeml.v1.InferenceService"`: Inference service status.
+  - `"snoozeml.v1.InferenceService"`: SnoozeML native inference service status.
+  - `"inference.GRPCInferenceService"`: Triton / OIP v2 inference service status.
 - **Serving Status**: Returns `SERVING` (`1`) when the daemon is operational.
 
 ---
@@ -204,8 +240,8 @@ SnoozeML maps internal engine errors directly to canonical gRPC status codes:
 | **`DEADLINE_EXCEEDED`** | `4` | `Timeout` | `504 Gateway Timeout` | Processing queue deadline or batch wait budget exceeded. |
 | **`NOT_FOUND`** | `5` | `NotFound` | `404 Not Found` | Requested `model_id` is not registered in the daemon. |
 | **`RESOURCE_EXHAUSTED`**| `8` | `ResourceExhausted`, `OutOfMemory` | `503 Service Unavailable` | GPU/Host memory exhausted and all active models are busy. Response includes `retry-after: 5` metadata. |
-| **`UNIMPLEMENTED`** | `12` | `UnsupportedSafetensorsArchitecture` | `501 Not Implemented` | Model format or architecture not supported by the execution backend. |
+| **`UNIMPLEMENTED`** | `12` | `UnsupportedSafetensorsArchitecture` | `501 Not Implemented` | Model format or architecture not supported by the execution backend, or out-of-scope Triton shared-memory/trace RPC. |
 | **`INTERNAL`** | `13` | `Runtime`, `QueueError` | `500 Internal Server Error` | Unexpected backend or engine calculation failure. |
 | **`UNAVAILABLE`** | `14` | `Loading` | `503 Service Unavailable` | Model is currently loading weights into memory. |
 | **`UNAUTHENTICATED`** | `16` | Missing/Invalid Credentials | `401 Unauthorized` | Missing `x-api-key` or `authorization: Bearer` header, invalid key, or expired JWT. |
-| **`PERMISSION_DENIED`** | `7` | Insufficient Role | `403 Forbidden` | Caller has `ReadOnly` role, but `Inference` role is required for `Infer`. |
+| **`PERMISSION_DENIED`** | `7` | Insufficient Role | `403 Forbidden` | Caller has `ReadOnly` role, but `Inference` or `Admin` role is required. |

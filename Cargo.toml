@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 # Async Runtime & Networking
 tokio = { version = "1.38", features = ["full"] }
+tokio-stream = "0.1"
 axum = { version = "0.7", features = ["macros", "json", "multipart"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tonic = { version = "0.12", features = ["tls"] }

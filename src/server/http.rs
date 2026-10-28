@@ -240,18 +240,21 @@ pub fn create_router(state: AppState) -> Router {
     let public_routes = Router::new()
         .route("/", get(home_handler))
         .route("/health/live", get(liveness_handler))
-        .route("/health/ready", get(readiness_handler));
+        .route("/health/ready", get(readiness_handler))
+        .merge(crate::server::triton_http::create_triton_public_routes());
 
     // Endpoints requiring ReadOnly role or higher
     let readonly_routes = Router::new()
         .route("/v1/models", get(list_models_handler))
-        .layer(from_fn(require_role(Role::ReadOnly)));
+        .layer(from_fn(require_role(Role::ReadOnly)))
+        .merge(crate::server::triton_http::create_triton_readonly_routes());
 
     // Endpoints requiring Inference role or higher
     let infer_routes = Router::new()
         .route("/v1/models/:model_id/infer", post(infer_handler))
         .layer(axum::extract::DefaultBodyLimit::max(128 * 1024 * 1024))
-        .layer(from_fn(require_role(Role::Inference)));
+        .layer(from_fn(require_role(Role::Inference)))
+        .merge(crate::server::triton_http::create_triton_infer_routes());
 
     // Administrative endpoints requiring Admin role
     let admin_routes = Router::new()
@@ -265,7 +268,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models/:model_id/unload", post(unload_model_handler))
         .route("/v1/models/:model_id/pin", post(pin_model_handler))
         .route("/v1/models/:model_id/unpin", post(unpin_model_handler))
-        .layer(from_fn(require_role(Role::Admin)));
+        .layer(from_fn(require_role(Role::Admin)))
+        .merge(crate::server::triton_http::create_triton_admin_routes());
 
     // Metrics endpoint: protected if protect_metrics is configured, otherwise public
     let protect_metrics = state.auth.as_ref().is_some_and(|a| a.protect_metrics());

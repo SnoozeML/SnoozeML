@@ -10,8 +10,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&["proto/snoozeml/v1/inference.proto"], &["proto"])?;
+        .compile_protos(
+            &[
+                "proto/snoozeml/v1/inference.proto",
+                "proto/third_party/grpc_service.proto",
+            ],
+            &["proto", "proto/third_party"],
+        )?;
 
     println!("cargo:rerun-if-changed=proto/snoozeml/v1/inference.proto");
+    println!("cargo:rerun-if-changed=proto/third_party/grpc_service.proto");
+    println!("cargo:rerun-if-changed=proto/third_party/model_config.proto");
+    println!("cargo:rerun-if-changed=proto/third_party/health.proto");
     Ok(())
 }

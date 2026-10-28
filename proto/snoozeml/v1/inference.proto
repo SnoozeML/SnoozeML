@@ -7,7 +7,8 @@ service InferenceService {
   // Executes unary inference for a registered model.
   rpc Infer(ModelInferRequest) returns (ModelInferResponse);
 
-  // TODO: Bi-directional StreamInfer will be added in a future phase.
+  // Executes bi-directional streaming inference for a registered model.
+  rpc StreamInfer(stream ModelInferRequest) returns (stream ModelInferResponse);
 }
 
 // Supported tensor element data types.

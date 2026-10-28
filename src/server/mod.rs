@@ -3,11 +3,12 @@
 pub mod grpc;
 pub mod http;
 pub mod metrics;
+pub mod triton_http;
 
 use crate::auth::{AuthConfig, AuthService};
 use crate::registry::ModelRegistry;
 use crate::server::grpc::proto::inference_service_server::InferenceServiceServer;
-use crate::server::grpc::SnoozeInferenceService;
+use crate::server::grpc::{GrpcInferenceServiceServer, SnoozeInferenceService, TritonGrpcService};
 use crate::server::http::{create_router, AppState};
 use crate::server::metrics::ServerMetrics;
 use crate::sweeper::spawn_scale_to_zero_sweeper;
@@ -227,10 +228,14 @@ pub async fn run_server(
             .set_serving::<InferenceServiceServer<SnoozeInferenceService>>()
             .await;
         health_reporter
+            .set_serving::<GrpcInferenceServiceServer<TritonGrpcService>>()
+            .await;
+        health_reporter
             .set_service_status("", tonic_health::ServingStatus::Serving)
             .await;
 
-        let grpc_inference_service = SnoozeInferenceService::new(state);
+        let grpc_inference_service = SnoozeInferenceService::new(state.clone());
+        let triton_grpc_service = TritonGrpcService::new(state);
 
         tracing::info!(
             address = %grpc_addr,
@@ -287,6 +292,11 @@ pub async fn run_server(
             .add_service(health_service)
             .add_service(
                 InferenceServiceServer::new(grpc_inference_service)
+                    .max_decoding_message_size(128 * 1024 * 1024)
+                    .max_encoding_message_size(128 * 1024 * 1024),
+            )
+            .add_service(
+                GrpcInferenceServiceServer::new(triton_grpc_service)
                     .max_decoding_message_size(128 * 1024 * 1024)
                     .max_encoding_message_size(128 * 1024 * 1024),
             )

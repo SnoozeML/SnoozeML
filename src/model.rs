@@ -95,6 +95,42 @@ impl<'a> Drop for ActiveRequestGuard<'a> {
     }
 }
 
+/// Snapshot of cumulative execution statistics for a model or replica group.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelStatsSnapshot {
+    /// Timestamp of the last inference request in milliseconds since the Unix epoch.
+    pub last_inference_ms: u64,
+    /// Cumulative number of individual inference items processed across batches.
+    pub inference_count: u64,
+    /// Cumulative number of batch executions performed by the backend.
+    pub execution_count: u64,
+    /// Cumulative count of successful inference requests.
+    pub success_count: u64,
+    /// Cumulative duration in nanoseconds of successful inference requests.
+    pub success_ns: u64,
+    /// Cumulative count of failed inference requests.
+    pub fail_count: u64,
+    /// Cumulative duration in nanoseconds of failed inference requests.
+    pub fail_ns: u64,
+    /// Cumulative duration in nanoseconds spent waiting in queues/loading before execution.
+    pub queue_ns: u64,
+    /// Cumulative duration in nanoseconds spent executing backend forward passes.
+    pub compute_infer_ns: u64,
+}
+
+#[derive(Debug, Default)]
+struct ControllerStats {
+    last_inference_ms: AtomicU64,
+    inference_count: AtomicU64,
+    execution_count: AtomicU64,
+    success_count: AtomicU64,
+    success_ns: AtomicU64,
+    fail_count: AtomicU64,
+    fail_ns: AtomicU64,
+    queue_ns: AtomicU64,
+    compute_infer_ns: AtomicU64,
+}
+
 /// Controller responsible for single-model execution, dynamic micro-batching, and memory lifecycle.
 pub struct ModelController {
     config: ModelConfig,
@@ -105,6 +141,7 @@ pub struct ModelController {
     last_accessed: AtomicU64,
     loaded_at: AtomicU64,
     active_requests: Arc<std::sync::atomic::AtomicUsize>,
+    stats: Arc<ControllerStats>,
     batcher: DynamicBatcher,
     registry: std::sync::RwLock<Option<std::sync::Weak<crate::registry::ModelRegistryInner>>>,
 }
@@ -136,8 +173,10 @@ impl ModelController {
     pub fn new_replica(config: ModelConfig, replica_index: usize) -> Arc<Self> {
         let backend: Arc<RwLock<Option<Box<dyn ModelBackend>>>> = Arc::new(RwLock::new(None));
         let state = Arc::new(RwLock::new(ModelState::Idle));
+        let stats = Arc::new(ControllerStats::default());
         let backend_clone = backend.clone();
         let state_clone = state.clone();
+        let stats_clone = stats.clone();
 
         let batcher_config = DynamicBatcherConfig {
             max_batch_size: config.max_batch_size,
@@ -148,6 +187,7 @@ impl ModelController {
         let run_fn = move |inputs: Vec<TensorPayload>, responders: Vec<BatchResponder>| {
             let backend_lock = backend_clone.clone();
             let state_lock = state_clone.clone();
+            let stats_ref = stats_clone.clone();
 
             tokio::task::spawn_blocking(move || {
                 // Update state to Busy during active inference
@@ -156,6 +196,13 @@ impl ModelController {
                     *st = ModelState::Busy;
                 }
 
+                let batch_items: u64 = responders
+                    .iter()
+                    .map(|(_, s)| u64::try_from(*s).unwrap_or(1))
+                    .fold(0u64, u64::saturating_add)
+                    .max(1);
+
+                let compute_start = std::time::Instant::now();
                 let guard = backend_lock.blocking_read();
                 let has_backend = guard.is_some();
                 let infer_result = if let Some(ref active_backend) = *guard {
@@ -166,6 +213,8 @@ impl ModelController {
                     ))
                 };
                 drop(guard);
+                let compute_ns =
+                    u64::try_from(compute_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
 
                 // Restore state before waking up awaiting callers
                 {
@@ -179,6 +228,14 @@ impl ModelController {
 
                 match infer_result {
                     Ok(batched_outputs) => {
+                        stats_ref.execution_count.fetch_add(1, Ordering::Relaxed);
+                        stats_ref
+                            .inference_count
+                            .fetch_add(batch_items, Ordering::Relaxed);
+                        stats_ref
+                            .compute_infer_ns
+                            .fetch_add(compute_ns, Ordering::Relaxed);
+
                         if responders.len() == 1 {
                             if let Some((tx, _)) = responders.into_iter().next() {
                                 let _ = tx.send(Ok(batched_outputs));
@@ -232,6 +289,7 @@ impl ModelController {
             last_accessed: AtomicU64::new(Self::now_millis()),
             loaded_at: AtomicU64::new(0),
             active_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            stats,
             batcher,
             registry: std::sync::RwLock::new(None),
         })
@@ -351,6 +409,22 @@ impl ModelController {
         self.config.min_residency
     }
 
+    /// Returns a snapshot of cumulative inference statistics for this replica controller.
+    #[must_use]
+    pub fn stats_snapshot(&self) -> ModelStatsSnapshot {
+        ModelStatsSnapshot {
+            last_inference_ms: self.stats.last_inference_ms.load(Ordering::Relaxed),
+            inference_count: self.stats.inference_count.load(Ordering::Relaxed),
+            execution_count: self.stats.execution_count.load(Ordering::Relaxed),
+            success_count: self.stats.success_count.load(Ordering::Relaxed),
+            success_ns: self.stats.success_ns.load(Ordering::Relaxed),
+            fail_count: self.stats.fail_count.load(Ordering::Relaxed),
+            fail_ns: self.stats.fail_ns.load(Ordering::Relaxed),
+            queue_ns: self.stats.queue_ns.load(Ordering::Relaxed),
+            compute_infer_ns: self.stats.compute_infer_ns.load(Ordering::Relaxed),
+        }
+    }
+
     /// Associates this controller with a parent registry's allocation supervisor.
     pub fn set_registry(&self, registry: std::sync::Weak<crate::registry::ModelRegistryInner>) {
         if let Ok(mut guard) = self.registry.write() {
@@ -375,11 +449,20 @@ impl ModelController {
         &self,
         inputs: Vec<TensorPayload>,
     ) -> Result<Vec<TensorPayload>, InferenceError> {
+        let req_start = std::time::Instant::now();
         self.touch();
+        self.stats
+            .last_inference_ms
+            .store(Self::now_millis(), Ordering::Relaxed);
         self.active_requests.fetch_add(1, Ordering::SeqCst);
         let _active_guard = ActiveRequestGuard(&self.active_requests);
 
-        self.ensure_loaded().await?;
+        if let Err(err) = self.ensure_loaded().await {
+            let elapsed_ns = u64::try_from(req_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            self.stats.fail_count.fetch_add(1, Ordering::Relaxed);
+            self.stats.fail_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+            return Err(err);
+        }
 
         let (tx, rx) = oneshot::channel();
         let job = InferenceJob {
@@ -388,10 +471,36 @@ impl ModelController {
             submitted_at: std::time::Instant::now(),
         };
 
-        self.batcher.submit(job).await?;
+        if let Err(err) = self.batcher.submit(job).await {
+            let elapsed_ns = u64::try_from(req_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            self.stats.fail_count.fetch_add(1, Ordering::Relaxed);
+            self.stats.fail_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+            return Err(err);
+        }
 
-        rx.await
-            .map_err(|_| InferenceError::Runtime("Inference response channel dropped".into()))?
+        let res = rx
+            .await
+            .map_err(|_| InferenceError::Runtime("Inference response channel dropped".into()))
+            .and_then(|r| r);
+
+        let elapsed_ns = u64::try_from(req_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        match res {
+            Ok(outputs) => {
+                self.stats.success_count.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .success_ns
+                    .fetch_add(elapsed_ns, Ordering::Relaxed);
+                self.stats
+                    .queue_ns
+                    .fetch_add(elapsed_ns / 2, Ordering::Relaxed);
+                Ok(outputs)
+            }
+            Err(err) => {
+                self.stats.fail_count.fetch_add(1, Ordering::Relaxed);
+                self.stats.fail_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+                Err(err)
+            }
+        }
     }
 
     /// Verifies the model backend is loaded into memory, rehydrating it from storage if idle.

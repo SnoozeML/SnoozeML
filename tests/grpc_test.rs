@@ -884,3 +884,81 @@ async fn test_grpc_error_parity_oom_wire() {
     let err = client.infer(req).await.unwrap_err();
     assert_eq!(err.code(), Code::ResourceExhausted);
 }
+
+#[tokio::test]
+async fn test_grpc_stream_infer_bidirectional() {
+    use tokio_stream::StreamExt;
+
+    let http_port = get_free_port().await;
+    let grpc_port = get_free_port().await;
+
+    let registry = ModelRegistry::new();
+    let model_cfg = ModelConfig {
+        id: "stream-grpc-model".to_string(),
+        onnx_path: "mock:test".to_string(),
+        idle_timeout: Duration::from_secs(60),
+        max_batch_size: 4,
+        max_batch_delay: Duration::from_millis(5),
+        ..Default::default()
+    };
+    registry.register(ModelController::new(model_cfg)).await;
+
+    let config = ServerConfig {
+        host: "127.0.0.1".to_string(),
+        port: http_port,
+        grpc_port,
+        grpc_enabled: true,
+        sweeper_interval: Duration::from_secs(60),
+        auth: None,
+        tls: None,
+        models_dir: std::path::PathBuf::from("./models"),
+        streams: Vec::new(),
+    };
+
+    tokio::spawn(async move {
+        let _ = run_server(config, registry).await;
+    });
+
+    wait_for_port(grpc_port).await;
+
+    let channel = tonic::transport::Channel::from_shared(format!("http://127.0.0.1:{grpc_port}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = InferenceServiceClient::new(channel);
+
+    let requests: Vec<ModelInferRequest> = (1..=3)
+        .map(|batch_size| {
+            let floats = vec![1.0f32; batch_size * 2];
+            ModelInferRequest {
+                model_id: "stream-grpc-model".to_string(),
+                inputs: vec![TensorData {
+                    name: "input".to_string(),
+                    shape: vec![batch_size as i64, 2],
+                    data_type: DataType::Fp32 as i32,
+                    raw_data: bytemuck::cast_slice::<f32, u8>(&floats).to_vec(),
+                }],
+                client_timeout_ms: None,
+                parameters: Default::default(),
+            }
+        })
+        .collect();
+
+    let mut resp_stream = client
+        .stream_infer(tokio_stream::iter(requests))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut received = Vec::new();
+    while let Some(item) = resp_stream.next().await {
+        received.push(item.unwrap());
+    }
+
+    assert_eq!(received.len(), 3);
+    assert_eq!(received[0].outputs[0].shape, vec![1, 4]);
+    assert_eq!(received[1].outputs[0].shape, vec![2, 4]);
+    assert_eq!(received[2].outputs[0].shape, vec![3, 4]);
+}

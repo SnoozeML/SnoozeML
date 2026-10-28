@@ -1,7 +1,9 @@
 //! Central registry for indexing, discovering, accessing, routing, and coordinating allocations
 //! and autoscaling of active model controllers and replicas.
 
-use crate::model::{compute_replica_idle_timeout, ModelConfig, ModelController};
+use crate::model::{
+    compute_replica_idle_timeout, ModelConfig, ModelController, ModelStatsSnapshot,
+};
 use crate::routing::{create_routing_strategy, RoutingStrategy};
 use crate::server::metrics::ServerMetrics;
 use crate::types::{InferenceError, ModelMetadata};
@@ -170,6 +172,25 @@ impl ModelReplicaGroup {
         for replica in guard.iter() {
             replica.unload().await;
         }
+    }
+
+    /// Aggregates cumulative inference statistics across all replicas in this group.
+    pub async fn stats_snapshot(&self) -> ModelStatsSnapshot {
+        let guard = self.replicas.read().await;
+        let mut total = ModelStatsSnapshot::default();
+        for replica in guard.iter() {
+            let s = replica.stats_snapshot();
+            total.last_inference_ms = total.last_inference_ms.max(s.last_inference_ms);
+            total.inference_count = total.inference_count.saturating_add(s.inference_count);
+            total.execution_count = total.execution_count.saturating_add(s.execution_count);
+            total.success_count = total.success_count.saturating_add(s.success_count);
+            total.success_ns = total.success_ns.saturating_add(s.success_ns);
+            total.fail_count = total.fail_count.saturating_add(s.fail_count);
+            total.fail_ns = total.fail_ns.saturating_add(s.fail_ns);
+            total.queue_ns = total.queue_ns.saturating_add(s.queue_ns);
+            total.compute_infer_ns = total.compute_infer_ns.saturating_add(s.compute_infer_ns);
+        }
+        total
     }
 
     /// Appends a replica controller to this model's replica pool.
@@ -672,6 +693,14 @@ impl ModelRegistry {
             all.extend(group.all_replicas().await);
         }
         all
+    }
+
+    /// Returns snapshots of all registered [`ModelReplicaGroup`] instances sorted by model ID.
+    pub async fn all_groups(&self) -> Vec<Arc<ModelReplicaGroup>> {
+        let guard = self.inner.models.read().await;
+        let mut groups: Vec<Arc<ModelReplicaGroup>> = guard.values().cloned().collect();
+        groups.sort_by(|a, b| a.id().cmp(b.id()));
+        groups
     }
 
     /// Returns the total number of model instances currently resident in memory.
