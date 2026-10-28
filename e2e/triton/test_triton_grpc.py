@@ -19,8 +19,14 @@ Exercises:
 from __future__ import annotations
 
 from functools import partial
+from pathlib import Path
 import queue
+import sys
 from typing import Any, List, Optional, Tuple
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import pytest
@@ -28,7 +34,7 @@ import pytest
 triton_grpc = pytest.importorskip("tritonclient.grpc")
 from tritonclient.utils import InferenceServerException
 
-from conftest import TritonDaemonEndpoints
+from e2e.conftest import TritonDaemonEndpoints
 
 
 def test_triton_grpc_server_health_and_metadata(

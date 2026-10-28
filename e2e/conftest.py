@@ -76,15 +76,18 @@ def _get_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_triton_live(proc: subprocess.Popen, http_url: str, timeout: float = 15.0) -> None:
-    """Polls ``GET /v2/health/live`` until the SnoozeML daemon is accepting requests."""
+def _wait_for_server_live(proc: subprocess.Popen, http_url: str, timeout: float = 15.0) -> None:
+    """Polls ``GET /health/live`` until the SnoozeML daemon is accepting requests."""
     deadline = time.monotonic() + timeout
-    url = f"http://{http_url}/v2/health/live"
+    url = f"http://{http_url}/health/live"
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             stderr_out = ""
             if proc.stderr is not None:
-                stderr_out = proc.stderr.read().decode("utf-8", errors="replace")
+                try:
+                    stderr_out = proc.stderr.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
             raise RuntimeError(
                 f"SnoozeML process exited early with code {proc.returncode}: {stderr_out}"
             )
@@ -97,6 +100,126 @@ def _wait_for_triton_live(proc: subprocess.Popen, http_url: str, timeout: float 
             pass
         time.sleep(0.1)
     raise RuntimeError(f"SnoozeML server did not become live at {url} within {timeout}s")
+
+
+def _wait_for_triton_live(proc: subprocess.Popen, http_url: str, timeout: float = 15.0) -> None:
+    """Polls ``GET /v2/health/live`` until the SnoozeML daemon is accepting requests."""
+    _wait_for_server_live(proc, http_url, timeout)
+
+
+@dataclass
+class SnoozeServerInstance:
+    """Context and management handle for an ephemeral SnoozeML daemon."""
+
+    process: subprocess.Popen
+    http_port: int
+    grpc_port: int
+    http_url: str
+    grpc_url: str
+    work_dir: Path
+    config_path: Path
+
+
+def spawn_snooze_server(
+    config_content: str,
+    tmp_path: Path,
+    extra_args: Optional[list[str]] = None,
+    timeout: float = 15.0,
+) -> SnoozeServerInstance:
+    """Writes config and launches a real ``snooze serve`` daemon on ephemeral ports."""
+    snooze_bin = _find_snooze_binary()
+    config_path = tmp_path / "models.toml"
+    config_path.write_text(config_content.strip(), encoding="utf-8")
+
+    http_port = _get_free_port()
+    grpc_port = _get_free_port()
+    http_url = f"127.0.0.1:{http_port}"
+    grpc_url = f"127.0.0.1:{grpc_port}"
+
+    cmd = [
+        str(snooze_bin),
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(http_port),
+        "--grpc-port",
+        str(grpc_port),
+        "--config",
+        str(config_path),
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(REPO_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+    try:
+        _wait_for_server_live(proc, http_url, timeout=timeout)
+    except Exception:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        raise
+
+    return SnoozeServerInstance(
+        process=proc,
+        http_port=http_port,
+        grpc_port=grpc_port,
+        http_url=http_url,
+        grpc_url=grpc_url,
+        work_dir=tmp_path,
+        config_path=config_path,
+    )
+
+
+
+@dataclass(frozen=True)
+class IrisModelArtifact:
+    """Pre-exported Scikit-Learn Iris ONNX model artifact and reference pipeline."""
+
+    onnx_path: Path
+    pipeline: Any
+    sample_x: np.ndarray
+
+
+@pytest.fixture(scope="session")
+def iris_model_artifact(tmp_path_factory: pytest.TempPathFactory) -> IrisModelArtifact:
+    """Session-scoped fixture providing a fitted Scikit-Learn LogisticRegression ONNX model."""
+    from sklearn.datasets import load_iris
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    from snoozeml.converters import export_sklearn
+
+    iris = load_iris()
+    x_iris = iris.data.astype(np.float32)
+    y_iris = iris.target.astype(np.int32)
+    sample_x = np.ascontiguousarray(x_iris[:6], dtype=np.float32)
+
+    pipe = make_pipeline(StandardScaler(), LogisticRegression(max_iter=300, random_state=42))
+    pipe.fit(x_iris, y_iris)
+
+    work_dir = tmp_path_factory.mktemp("snooze_iris_onnx")
+    onnx_path = work_dir / "sklearn_iris.onnx"
+    export_sklearn(
+        pipe,
+        initial_types=[("input", (None, 4))],
+        output_path=onnx_path,
+    )
+
+    return IrisModelArtifact(
+        onnx_path=onnx_path,
+        pipeline=pipe,
+        sample_x=sample_x,
+    )
 
 
 @pytest.fixture(scope="session")

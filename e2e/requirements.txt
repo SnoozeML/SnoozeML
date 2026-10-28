@@ -8,5 +8,8 @@ onnx>=1.15.0
 skl2onnx>=1.16.0
 xgboost>=2.0.0
 
-# Optional for future broker / queue integration tests (Kafka, RabbitMQ, Redis Streams):
-# testcontainers[redis,rabbitmq,kafka]>=4.0.0
+# Real event streaming and broker integration dependencies:
+testcontainers[redis,rabbitmq,kafka]>=4.0.0
+redis>=5.0.0
+pika>=1.3.0
+kafka-python-ng>=2.2.0
