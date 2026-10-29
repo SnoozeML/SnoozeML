@@ -90,14 +90,6 @@ def _poll_kafka_messages(
     return messages
 
 
-KAFKA_SRC_BUG_REASON = (
-    "Bug in src/stream/kafka.rs: KafkaStreamDriver uses a single offset that is only "
-    "updated in ack() after inference completes, but poll_next() repeatedly fetches "
-    "from the unadvanced offset, resulting in duplicate message ingestion."
-)
-
-
-@pytest.mark.xfail(reason=KAFKA_SRC_BUG_REASON)
 def test_kafka_stream_happy_path_single_infer(
     tmp_path_factory: pytest.TempPathFactory,
     kafka_service: Dict[str, Any],
@@ -181,7 +173,6 @@ format = "json"
             server.process.kill()
 
 
-@pytest.mark.xfail(reason=KAFKA_SRC_BUG_REASON)
 def test_kafka_stream_concurrent_micro_batching(
     tmp_path_factory: pytest.TempPathFactory,
     kafka_service: Dict[str, Any],
@@ -266,7 +257,6 @@ format = "json"
             server.process.kill()
 
 
-@pytest.mark.xfail(reason=KAFKA_SRC_BUG_REASON)
 def test_kafka_stream_custom_reply_to_routing(
     tmp_path_factory: pytest.TempPathFactory,
     kafka_service: Dict[str, Any],
@@ -349,7 +339,6 @@ format = "json"
             server.process.kill()
 
 
-@pytest.mark.xfail(reason=KAFKA_SRC_BUG_REASON)
 def test_kafka_stream_error_dlq_malformed_json(
     tmp_path_factory: pytest.TempPathFactory,
     kafka_service: Dict[str, Any],
@@ -410,7 +399,6 @@ format = "json"
             server.process.kill()
 
 
-@pytest.mark.xfail(reason=KAFKA_SRC_BUG_REASON)
 def test_kafka_stream_error_dlq_shape_mismatch(
     tmp_path_factory: pytest.TempPathFactory,
     kafka_service: Dict[str, Any],
@@ -483,7 +471,6 @@ format = "json"
             server.process.kill()
 
 
-@pytest.mark.xfail(reason=KAFKA_SRC_BUG_REASON)
 def test_kafka_stream_error_dlq_unregistered_model(
     tmp_path_factory: pytest.TempPathFactory,
     kafka_service: Dict[str, Any],
