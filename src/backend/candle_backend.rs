@@ -136,8 +136,8 @@ impl CandleBackend {
 
         let (device, device_label) = match config.device {
             CandleDevice::Auto => {
-                // 1. Try GPU (CUDA)
-                #[cfg(feature = "cuda")]
+                // 1. Try GPU (CUDA) when compiled with candle-cuda support
+                #[cfg(feature = "candle-cuda")]
                 let gpu_dev = match Device::new_cuda(0) {
                     Ok(dev) => {
                         tracing::info!(model = %config.model_path, "Auto device: initialized Candle with CUDA GPU");
@@ -148,27 +148,26 @@ impl CandleBackend {
                         None
                     }
                 };
-                #[cfg(not(feature = "cuda"))]
+                #[cfg(not(feature = "candle-cuda"))]
                 let gpu_dev: Option<(Device, &'static str)> = None;
 
                 if let Some(res) = gpu_dev {
                     res
                 } else {
-                    // 2. Try MLX / Metal on macOS
-                    let mlx_dev = if cfg!(target_os = "macos") {
-                        match Device::new_metal(0) {
-                            Ok(dev) => {
-                                tracing::info!(model = %config.model_path, "Auto device: initialized Candle with Apple Silicon MLX/Metal");
-                                Some((dev, "candle-mlx"))
-                            }
-                            Err(e) => {
-                                tracing::info!(model = %config.model_path, error = %e, "Metal/MLX unavailable for Candle; falling back to CPU");
-                                None
-                            }
+                    // 2. Try MLX / Metal on macOS when compiled with metal support
+                    #[cfg(all(target_os = "macos", feature = "metal"))]
+                    let mlx_dev = match Device::new_metal(0) {
+                        Ok(dev) => {
+                            tracing::info!(model = %config.model_path, "Auto device: initialized Candle with Apple Silicon MLX/Metal");
+                            Some((dev, "candle-mlx"))
                         }
-                    } else {
-                        None
+                        Err(e) => {
+                            tracing::info!(model = %config.model_path, error = %e, "Metal/MLX unavailable for Candle; falling back to CPU");
+                            None
+                        }
                     };
+                    #[cfg(not(all(target_os = "macos", feature = "metal")))]
+                    let mlx_dev: Option<(Device, &'static str)> = None;
 
                     if let Some(res) = mlx_dev {
                         res
@@ -181,31 +180,40 @@ impl CandleBackend {
             }
             CandleDevice::Cpu => (Device::Cpu, "candle-cpu"),
             CandleDevice::Mlx => {
-                if cfg!(target_os = "macos") {
-                    match Device::new_metal(0) {
-                        Ok(dev) => (dev, "candle-mlx"),
-                        Err(e) => {
-                            tracing::warn!(model = %config.model_path, error = %e, "MLX/Metal requested for Candle but failed to initialize; falling back to CPU");
-                            (Device::Cpu, "candle-cpu")
-                        }
-                    }
-                } else {
-                    tracing::warn!(model = %config.model_path, "MLX/Metal requested for Candle but current OS is not macOS; falling back to CPU");
-                    (Device::Cpu, "candle-cpu")
+                #[cfg(all(target_os = "macos", feature = "metal"))]
+                {
+                    let dev = Device::new_metal(0).map_err(|e| {
+                        InferenceError::Runtime(format!(
+                            "Failed to initialize Metal/MLX device for Candle model '{}': {e}",
+                            config.model_path
+                        ))
+                    })?;
+                    (dev, "candle-mlx")
+                }
+                #[cfg(not(all(target_os = "macos", feature = "metal")))]
+                {
+                    return Err(InferenceError::Runtime(format!(
+                        "Metal/MLX device requested for Candle model '{}', but snooze was not compiled on macOS with the 'metal' feature",
+                        config.model_path
+                    )));
                 }
             }
-            #[cfg(feature = "cuda")]
-            CandleDevice::Cuda(idx) => match Device::new_cuda(idx) {
-                Ok(dev) => (dev, "candle-cuda"),
-                Err(e) => {
-                    tracing::warn!(model = %config.model_path, error = %e, "CUDA requested for Candle but device initialization failed; falling back to CPU");
-                    (Device::Cpu, "candle-cpu")
-                }
-            },
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(feature = "candle-cuda")]
+            CandleDevice::Cuda(idx) => {
+                let dev = Device::new_cuda(idx).map_err(|e| {
+                    InferenceError::Runtime(format!(
+                        "Failed to initialize CUDA device {idx} for Candle model '{}': {e}",
+                        config.model_path
+                    ))
+                })?;
+                (dev, "candle-cuda")
+            }
+            #[cfg(not(feature = "candle-cuda"))]
             CandleDevice::Cuda(_) => {
-                tracing::warn!(model = %config.model_path, "CUDA requested for Candle but crate compiled without CUDA; falling back to CPU");
-                (Device::Cpu, "candle-cpu")
+                return Err(InferenceError::Runtime(format!(
+                    "CUDA device requested for Candle model '{}', but snooze was compiled without the 'candle-cuda' feature (requires NVIDIA CUDA Toolkit / nvcc at build time, or export the model to ONNX to use the prebuilt ONNX Runtime CUDA provider)",
+                    config.model_path
+                )));
             }
         };
 

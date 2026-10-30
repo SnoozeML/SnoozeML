@@ -91,8 +91,9 @@ SnoozeML/
 
 All code in `src/` is compiled under `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]` and `#![warn(missing_docs)]`. Every contribution **must** adhere to the following rules (detailed in `.agents/rules/rust.md`, `.agents/rules/architecture-invariants.md`, and `.agents/rules/api-and-security.md`):
 
-### 3.1 Zero-Panic Policy & Defensive Design
+### 3.1 Zero-Panic Policy, No Silent Failures & Defensive Design
 - **Forbidden Constructs in `src/`**: Never use `.unwrap()`, `.expect()`, `panic!()`, `unreachable!()`, or `todo!()` outside of test modules (`#[cfg(test)]` or `tests/`).
+- **No Silent Failures**: Silent failures are strictly unacceptable. Never swallow hardware initialization errors, execution provider registration failures (e.g. CUDA/TensorRT/CoreML), or explicit user configuration errors by silently falling back to CPU or misreporting the active provider state. Hardware fallbacks are only permitted when the user configures `auto` device selection, and must always report the true active execution provider.
 - **No Direct Indexing**: Never index slices or vectors directly (`vec[0]`, `slice[i]`) in production code. Always use `.get()`, `.first()`, `.get_mut()`, or iterators with explicit bounds handling.
 - **Checked Arithmetic & Conversions**: Use `checked_add`, `checked_mul`, `saturating_sub`, and `TryFrom`/`TryInto` when validating external tensor shapes, sizes, or durations.
 - **Lock Poisoning**: Never `.unwrap()` a `std::sync::Mutex` or `RwLock` guard; handle poison errors or recover via `.unwrap_or_else( std::sync::PoisonError::into_inner )` where appropriate.

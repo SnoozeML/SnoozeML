@@ -297,8 +297,8 @@ Three container options are available to match your deployment needs:
 | Option / Flavor | Primary Tags | Supported Platforms | Features & Backends |
 | :--- | :--- | :--- | :--- |
 | **`cuda` (Default)** | `:latest`, `:cuda`, `:full`, `:<version>` | `linux/amd64` | Full GPU-accelerated runtime with NVIDIA CUDA and TensorRT execution providers, Candle Safetensors, Tree models, bundled Python worker runtime (`numpy`, `requests`, `snoozeml`), and all streaming brokers (`streams-all`). |
-| **`cpu`** | `:cpu`, `:<version>-cpu` | `linux/amd64`, `linux/arm64` | Standard CPU container with all model backends, bundled Python worker runtime, and all streaming brokers. Ideal for cloud CPU instances. |
-| **`slim`** | `:slim`, `:lite`, `:<version>-slim` | `linux/amd64`, `linux/arm64` | Ultra-lean (~120 MB) pure Rust runtime. Includes ONNX Runtime (CPU), Candle, and Tree backends with zero Python dependencies for minimal CVE attack surface. |
+| **`cpu`** | `:cpu`, `:<version>-cpu` | `linux/amd64`, `linux/arm64` | Standard CPU container (~83 MB compressed) with all model backends, bundled Python worker runtime, and all streaming brokers. Ideal for cloud CPU instances. |
+| **`slim`** | `:slim`, `:lite`, `:<version>-slim` | `linux/amd64`, `linux/arm64` | Ultra-lean (~52 MB compressed) pure Rust runtime. Includes ONNX Runtime (CPU), Candle, and Tree backends with zero Python dependencies for minimal CVE attack surface. |
 
 #### Pull & Run with Docker
 
@@ -306,10 +306,10 @@ Three container options are available to match your deployment needs:
 # Pull the default GPU container (CUDA + TensorRT + Python workers)
 docker pull ghcr.io/snoozeml/snoozeml:latest
 
-# Or pull the standard CPU image
+# Or pull the standard CPU image (~83 MB compressed)
 docker pull ghcr.io/snoozeml/snoozeml:cpu
 
-# Or pull the minimal slim image (~120 MB, zero Python)
+# Or pull the minimal slim image (~52 MB compressed, zero Python)
 docker pull ghcr.io/snoozeml/snoozeml:slim
 
 # Launch container with local models directory mounted:
@@ -331,7 +331,7 @@ You can also compile custom images directly using Docker BuildKit and `cargo-che
 ```bash
 docker build --target cuda -t snooze-ml:cuda .  # Default full GPU build
 docker build --target cpu -t snooze-ml:cpu .    # Standard CPU + Python build
-docker build --target slim -t snooze-ml:slim .  # Lean pure-Rust build (~120 MB)
+docker build --target slim -t snooze-ml:slim .  # Lean pure-Rust build (~52 MB compressed)
 
 # Or launch via Docker Compose / Buildx Bake
 docker compose up snooze-cuda

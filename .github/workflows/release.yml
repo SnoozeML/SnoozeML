@@ -84,10 +84,10 @@ jobs:
           cp target/${{ matrix.target }}/release/snooze dist/${{ matrix.artifact_name }}/bin/snooze
           strip dist/${{ matrix.artifact_name }}/bin/snooze || true
 
-          # Bundle any ONNX Runtime shared libraries downloaded by ort during build
-          find target/${{ matrix.target }}/release -maxdepth 4 \
+          # Bundle any ONNX Runtime shared libraries downloaded by ort during build (dereference symlinks via -L)
+          find target/${{ matrix.target }}/release -maxdepth 1 \
             -name "libonnxruntime*.so*" \
-            -exec cp -P {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
+            -exec cp -L {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
 
           cp LICENSE README.md install.sh dist/${{ matrix.artifact_name }}/
           tar -C dist -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}
@@ -142,10 +142,10 @@ jobs:
           cp target/aarch64-apple-darwin/release/snooze dist/${{ matrix.artifact_name }}/bin/snooze
           strip dist/${{ matrix.artifact_name }}/bin/snooze || true
 
-          # Bundle any ONNX Runtime shared libraries downloaded by ort during build
-          find target/aarch64-apple-darwin/release -maxdepth 4 \
+          # Bundle any ONNX Runtime shared libraries downloaded by ort during build (dereference symlinks via -L)
+          find target/aarch64-apple-darwin/release -maxdepth 1 \
             -name "libonnxruntime*.dylib*" \
-            -exec cp -P {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
+            -exec cp -L {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
 
           cp LICENSE README.md install.sh dist/${{ matrix.artifact_name }}/
           tar -C dist -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}
@@ -199,7 +199,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
           Copy-Item "target/x86_64-pc-windows-msvc/release/snooze.exe" -Destination "$pkgDir/snooze.exe"
 
-          Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release" -Recurse -Filter "*onnxruntime*.dll" -ErrorAction SilentlyContinue |
+          Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release" -Depth 0 -Filter "*.dll" -ErrorAction SilentlyContinue |
             ForEach-Object { Copy-Item $_.FullName -Destination $pkgDir -Force }
 
           Copy-Item "LICENSE", "README.md", "install.ps1" -Destination "dist/${{ matrix.artifact_name }}/"

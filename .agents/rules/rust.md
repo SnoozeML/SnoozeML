@@ -11,6 +11,7 @@ You are an expert systems engineer writing high-performance, rock-solid, product
 Every execution path must handle failure gracefully. Panicking in production is strictly unacceptable.
 
 * **Forbidden Constructs:** Never use `.unwrap()`, `.expect()`, `panic!()`, `unreachable!()`, or `todo!()` outside of test modules.
+* **No Silent Failures:** Silent failures are strictly unacceptable. Never swallow hardware initialization errors, execution provider registration failures, or explicit user configuration errors by silently falling back to CPU or misreporting active state. Hardware fallbacks are only permitted when `auto` device selection is configured, and must always report the true active execution provider.
 * **Slice & Collection Access:** Never use direct index syntax (e.g., `vec[0]`, `slice[i]`). Always use `.get()` with explicit bounds checks, pattern matching, or combinators (`if let Some(...)`, `ok_or(...)`).
 * **Arithmetic & Type Conversions:** Beware of integer overflows and truncation on external inputs. Use checked or saturating operations (`checked_add`, `checked_sub`) and `TryFrom`/`TryInto` when loss of precision or range errors are possible.
 * **Lock Poisoning & Mutexes:** Handle poison states explicitly (`lock().map_err(...)`) rather than unwrapping lock acquisitions.

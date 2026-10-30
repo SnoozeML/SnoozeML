@@ -82,8 +82,10 @@ candle-backend = ["dep:candle-core", "dep:candle-nn", "dep:safetensors", "dep:ca
 tree-backend = ["dep:hessboost"]
 worker-backend = []
 cuda = ["ort-backend", "ort?/cuda"]
+candle-cuda = ["cuda", "candle-backend", "candle-core?/cuda", "candle-nn?/cuda", "candle-transformers?/cuda"]
 tensorrt = ["ort-backend", "ort?/tensorrt"]
 coreml = ["ort-backend", "ort?/coreml"]
+metal = ["candle-backend", "candle-core?/metal", "candle-nn?/metal", "candle-transformers?/metal"]
 
 # Streaming features
 streams = ["dep:async-trait"]

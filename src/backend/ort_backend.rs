@@ -145,103 +145,58 @@ impl OrtBackend {
             ExecutionProvider::Cuda => {
                 #[cfg(feature = "cuda")]
                 {
-                    match Self::try_commit_session(
-                        path,
-                        config.intra_threads,
-                        config.inter_threads,
-                        ExecutionProvider::Cuda,
-                    ) {
-                        Ok(s) => (s, ExecutionProvider::Cuda),
-                        Err(e) => {
-                            tracing::warn!(model = %config.model_path, error = %e, "CUDA requested but failed to initialize; falling back to CPU");
-                            let s = Self::try_commit_session(
-                                path,
-                                config.intra_threads,
-                                config.inter_threads,
-                                ExecutionProvider::Cpu,
-                            )?;
-                            (s, ExecutionProvider::Cpu)
-                        }
-                    }
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    tracing::warn!(model = %config.model_path, "CUDA requested but crate compiled without cuda feature; falling back to CPU");
                     let s = Self::try_commit_session(
                         path,
                         config.intra_threads,
                         config.inter_threads,
-                        ExecutionProvider::Cpu,
+                        ExecutionProvider::Cuda,
                     )?;
-                    (s, ExecutionProvider::Cpu)
+                    (s, ExecutionProvider::Cuda)
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    return Err(InferenceError::Runtime(format!(
+                        "CUDA execution provider requested for '{}', but snooze was compiled without the 'cuda' feature",
+                        config.model_path
+                    )));
                 }
             }
             ExecutionProvider::TensorRt => {
                 #[cfg(feature = "tensorrt")]
                 {
-                    match Self::try_commit_session(
-                        path,
-                        config.intra_threads,
-                        config.inter_threads,
-                        ExecutionProvider::TensorRt,
-                    ) {
-                        Ok(s) => (s, ExecutionProvider::TensorRt),
-                        Err(e) => {
-                            tracing::warn!(model = %config.model_path, error = %e, "TensorRT requested but failed to initialize; falling back to CPU");
-                            let s = Self::try_commit_session(
-                                path,
-                                config.intra_threads,
-                                config.inter_threads,
-                                ExecutionProvider::Cpu,
-                            )?;
-                            (s, ExecutionProvider::Cpu)
-                        }
-                    }
-                }
-                #[cfg(not(feature = "tensorrt"))]
-                {
-                    tracing::warn!(model = %config.model_path, "TensorRT requested but crate compiled without tensorrt feature; falling back to CPU");
                     let s = Self::try_commit_session(
                         path,
                         config.intra_threads,
                         config.inter_threads,
-                        ExecutionProvider::Cpu,
+                        ExecutionProvider::TensorRt,
                     )?;
-                    (s, ExecutionProvider::Cpu)
+                    (s, ExecutionProvider::TensorRt)
+                }
+                #[cfg(not(feature = "tensorrt"))]
+                {
+                    return Err(InferenceError::Runtime(format!(
+                        "TensorRT execution provider requested for '{}', but snooze was compiled without the 'tensorrt' feature",
+                        config.model_path
+                    )));
                 }
             }
             ExecutionProvider::CoreML => {
                 #[cfg(all(target_os = "macos", feature = "coreml"))]
                 {
-                    match Self::try_commit_session(
-                        path,
-                        config.intra_threads,
-                        config.inter_threads,
-                        ExecutionProvider::CoreML,
-                    ) {
-                        Ok(s) => (s, ExecutionProvider::CoreML),
-                        Err(e) => {
-                            tracing::warn!(model = %config.model_path, error = %e, "CoreML / MLX requested but failed to initialize; falling back to CPU");
-                            let s = Self::try_commit_session(
-                                path,
-                                config.intra_threads,
-                                config.inter_threads,
-                                ExecutionProvider::Cpu,
-                            )?;
-                            (s, ExecutionProvider::Cpu)
-                        }
-                    }
-                }
-                #[cfg(not(all(target_os = "macos", feature = "coreml")))]
-                {
-                    tracing::warn!(model = %config.model_path, "CoreML / MLX requested but not supported in current environment; falling back to CPU");
                     let s = Self::try_commit_session(
                         path,
                         config.intra_threads,
                         config.inter_threads,
-                        ExecutionProvider::Cpu,
+                        ExecutionProvider::CoreML,
                     )?;
-                    (s, ExecutionProvider::Cpu)
+                    (s, ExecutionProvider::CoreML)
+                }
+                #[cfg(not(all(target_os = "macos", feature = "coreml")))]
+                {
+                    return Err(InferenceError::Runtime(format!(
+                        "CoreML execution provider requested for '{}', but CoreML is not supported or enabled in this build",
+                        config.model_path
+                    )));
                 }
             }
             ExecutionProvider::Cpu => {
@@ -282,25 +237,31 @@ impl OrtBackend {
             #[cfg(feature = "cuda")]
             ExecutionProvider::Cuda => {
                 builder = builder
-                    .with_execution_providers([ort::ep::CUDA::default().build()])
+                    .with_execution_providers([ort::ep::CUDA::default().build().error_on_failure()])
                     .map_err(|e| {
-                        InferenceError::Runtime(format!("Failed to set CUDA provider: {e}"))
+                        InferenceError::Runtime(format!("Failed to register CUDA provider: {e}"))
                     })?;
             }
             #[cfg(feature = "tensorrt")]
             ExecutionProvider::TensorRt => {
                 builder = builder
-                    .with_execution_providers([ort::ep::TensorRT::default().build()])
+                    .with_execution_providers([ort::ep::TensorRT::default()
+                        .build()
+                        .error_on_failure()])
                     .map_err(|e| {
-                        InferenceError::Runtime(format!("Failed to set TensorRT provider: {e}"))
+                        InferenceError::Runtime(format!(
+                            "Failed to register TensorRT provider: {e}"
+                        ))
                     })?;
             }
             #[cfg(all(target_os = "macos", feature = "coreml"))]
             ExecutionProvider::CoreML => {
                 builder = builder
-                    .with_execution_providers([ort::ep::CoreML::default().build()])
+                    .with_execution_providers([ort::ep::CoreML::default()
+                        .build()
+                        .error_on_failure()])
                     .map_err(|e| {
-                        InferenceError::Runtime(format!("Failed to set CoreML provider: {e}"))
+                        InferenceError::Runtime(format!("Failed to register CoreML provider: {e}"))
                     })?;
             }
             _ => {}

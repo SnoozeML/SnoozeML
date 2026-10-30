@@ -423,16 +423,37 @@ mod candle_tests {
                 || backend_auto.provider_name() == "candle-cpu"
         );
 
-        // Test CandleDevice::Mlx (falls back to CPU if not macOS/metal)
+        // Test CandleDevice::Mlx (returns explicit error when Metal/macOS is unavailable; no silent fallback)
         let config_mlx = CandleConfig {
             model_path: model_path.to_str().unwrap().to_string(),
             device: CandleDevice::Mlx,
         };
-        let backend_mlx = CandleBackend::new(&config_mlx).unwrap();
-        assert!(
-            backend_mlx.provider_name() == "candle-mlx"
-                || backend_mlx.provider_name() == "candle-cpu"
-        );
+        #[cfg(all(target_os = "macos", feature = "metal"))]
+        {
+            if let Ok(backend_mlx) = CandleBackend::new(&config_mlx) {
+                assert_eq!(backend_mlx.provider_name(), "candle-mlx");
+            }
+        }
+        #[cfg(not(all(target_os = "macos", feature = "metal")))]
+        {
+            assert!(matches!(
+                CandleBackend::new(&config_mlx),
+                Err(InferenceError::Runtime(_))
+            ));
+        }
+
+        // Test explicit CandleDevice::Cuda(0) without candle-cuda feature fails explicitly instead of falling back
+        #[cfg(not(feature = "candle-cuda"))]
+        {
+            let config_cuda = CandleConfig {
+                model_path: model_path.to_str().unwrap().to_string(),
+                device: CandleDevice::Cuda(0),
+            };
+            assert!(matches!(
+                CandleBackend::new(&config_cuda),
+                Err(InferenceError::Runtime(_))
+            ));
+        }
 
         let _ = std::fs::remove_file(&model_path);
     }

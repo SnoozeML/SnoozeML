@@ -219,10 +219,17 @@ def classify_error(exc: BaseException) -> str:
 
 
 def resolve_device(device: str) -> str:
-    """Resolve ``auto`` using torch if the user module imported it, else return ``device`` unchanged."""
+    """Resolve ``auto`` using torch if available, else return ``device`` unchanged."""
     if device != "auto":
         return device
     torch = sys.modules.get("torch")
+    if torch is None:
+        try:
+            import importlib  # noqa: PLC0415
+
+            torch = importlib.import_module("torch")
+        except Exception:  # noqa: BLE001 - torch is optional in worker environments
+            torch = None
     if torch is not None:
         try:
             if torch.cuda.is_available():

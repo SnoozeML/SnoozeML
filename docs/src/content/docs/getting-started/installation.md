@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh |
 You can customize the installation by passing flags after `sh -s --`:
 
 ```bash
-# Install the lightweight CPU-only variant (~10x smaller download, no GPU provider libraries)
+# Install the lightweight CPU-only variant (~19 MB download, no GPU provider libraries)
 curl -fsSL https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.sh | sh -s -- --cpu
 
 # Install binary only without creating or starting the background daemon
@@ -135,8 +135,8 @@ Official prebuilt, hardened multi-arch container images are published to the **G
 | Flavor | Primary Image Reference | Supported Platforms | Features & Backends |
 | :--- | :--- | :--- | :--- |
 | **`cuda` (Default)** | `ghcr.io/snoozeml/snoozeml:latest`<br/>`ghcr.io/snoozeml/snoozeml:cuda` | `linux/amd64` | Full GPU-accelerated runtime with NVIDIA CUDA and TensorRT execution providers, Candle Safetensors, Tree models, bundled Python worker runtime (`numpy`, `requests`, `snoozeml`), and all streaming brokers (`streams-all`). |
-| **`cpu`** | `ghcr.io/snoozeml/snoozeml:cpu` | `linux/amd64`<br/>`linux/arm64` | Standard CPU container with all model backends, bundled Python worker runtime, and all streaming brokers. Ideal for cloud CPU instances (~280 MB). |
-| **`slim`** | `ghcr.io/snoozeml/snoozeml:slim`<br/>`ghcr.io/snoozeml/snoozeml:lite` | `linux/amd64`<br/>`linux/arm64` | Ultra-lean (~120 MB) pure Rust runtime. Includes ONNX Runtime (CPU), Candle, and Tree backends with zero Python dependencies for minimal CVE attack surface. |
+| **`cpu`** | `ghcr.io/snoozeml/snoozeml:cpu` | `linux/amd64`<br/>`linux/arm64` | Standard CPU container (~83 MB compressed) with all model backends, bundled Python worker runtime, and all streaming brokers. Ideal for cloud CPU instances. |
+| **`slim`** | `ghcr.io/snoozeml/snoozeml:slim`<br/>`ghcr.io/snoozeml/snoozeml:lite` | `linux/amd64`<br/>`linux/arm64` | Ultra-lean (~52 MB compressed) pure Rust runtime. Includes ONNX Runtime (CPU), Candle, and Tree backends with zero Python dependencies for minimal CVE attack surface. |
 
 ### Pulling from GitHub Container Registry
 
@@ -146,10 +146,10 @@ Pull the official image flavor matching your hardware:
 # 1. Pull the default GPU container (CUDA + TensorRT + Python workers)
 docker pull ghcr.io/snoozeml/snoozeml:latest
 
-# 2. Or pull the standard CPU container
+# 2. Or pull the standard CPU container (~83 MB compressed)
 docker pull ghcr.io/snoozeml/snoozeml:cpu
 
-# 3. Or pull the minimal slim container (~120 MB, zero Python)
+# 3. Or pull the minimal slim container (~52 MB compressed, zero Python)
 docker pull ghcr.io/snoozeml/snoozeml:slim
 ```
 
@@ -201,7 +201,7 @@ docker build --target cuda -t snooze-ml:cuda .
 # Standard CPU build (All backends + Python workers)
 docker build --target cpu -t snooze-ml:cpu .
 
-# Slim build (~120 MB pure Rust, zero Python)
+# Slim build (~52 MB compressed pure Rust, zero Python)
 docker build --target slim -t snooze-ml:slim .
 ```
 
