@@ -55,6 +55,12 @@ $env:SNOOZE_VARIANT="cpu"; irm https://raw.githubusercontent.com/SnoozeML/Snooze
 
 This extracts `snooze.exe` and bundled ONNX Runtime DLLs into `%LOCALAPPDATA%\Programs\SnoozeML\bin`, initializes `%LOCALAPPDATA%\Programs\SnoozeML\models`, and adds the binary directory to your user `PATH`.
 
+> [!NOTE]
+> **Bare-Metal NVIDIA GPU Prerequisites:** To avoid shipping a ~2 GB archive, the standard Linux and Windows release binaries include the ONNX Runtime CUDA/TensorRT provider bridges (`libonnxruntime_providers_cuda`) and expect **CUDA 13 Runtime** (`libcudart` / `libcublas` 13) and **cuDNN 9** (`libcudnn` 9) to be installed on the host (`sudo apt-get install cuda-runtime-13-0 libcudnn9-cuda-13` on Ubuntu/Debian).
+> - When `device = "auto"` (default) is used and CUDA runtime libraries are not installed, SnoozeML logs a readable warning and falls back cleanly to CPU.
+> - When `device = "cuda"` or `"tensorrt"` is explicitly configured, SnoozeML raises a descriptive error instructing what libraries to install.
+> - If you prefer not to install CUDA/cuDNN on the host, use the `ghcr.io/snoozeml/snoozeml:cuda` Docker image (which bundles CUDA 13 and cuDNN 9 inside the container).
+
 ---
 
 ## 2. Prerequisites for Building from Source
@@ -73,8 +79,8 @@ If you prefer to compile SnoozeML from source (for example, to enable custom CUD
   - Node.js (>= 20) and npm: `npm --prefix docs install && npm --prefix docs run dev`
   - Python (>= 3.9) and Sphinx: `pip install -e "python[dev]" && sphinx-build -b html python/docs docs/dist/python`
 - **(Optional) NVIDIA CUDA / TensorRT**:
-  - NVIDIA Driver (>= 525.60.13 recommended)
-  - CUDA Toolkit (11.8 or 12.x) and cuDNN if compiling with GPU support.
+  - NVIDIA Driver (>= 550+ recommended for CUDA 13)
+  - CUDA Toolkit 13.x (`cuda-toolkit-13-0` / `cuda-runtime-13-0`) and cuDNN 9 (`libcudnn9-cuda-13`) if compiling or running with GPU support (`--features cuda` or `--features candle-cuda`).
 
 ---
 

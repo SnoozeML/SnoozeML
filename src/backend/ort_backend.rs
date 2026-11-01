@@ -93,7 +93,11 @@ impl OrtBackend {
                             Some((s, ExecutionProvider::Cuda))
                         }
                         Err(e) => {
-                            tracing::info!(model = %config.model_path, error = %e, "CUDA GPU unavailable; checking next option");
+                            tracing::warn!(
+                                model = %config.model_path,
+                                error = %e,
+                                "Auto device: CUDA GPU unavailable or missing runtime libraries (requires NVIDIA driver + CUDA 13 runtime & cuDNN 9 on host PATH/LD_LIBRARY_PATH, or use ghcr.io/snoozeml/snoozeml:cuda); falling back to CPU"
+                            );
                             None
                         }
                     }
@@ -150,7 +154,13 @@ impl OrtBackend {
                         config.intra_threads,
                         config.inter_threads,
                         ExecutionProvider::Cuda,
-                    )?;
+                    )
+                    .map_err(|e| {
+                        InferenceError::Runtime(format!(
+                            "Failed to initialize CUDA execution provider for '{}': {e}. Ensure an NVIDIA GPU driver, CUDA 13 runtime libraries (libcudart/cublas 13), and cuDNN 9 are installed on your host PATH/LD_LIBRARY_PATH (e.g. 'sudo apt-get install cuda-runtime-13-0 libcudnn9-cuda-13' on Ubuntu/Debian), or run the preconfigured 'ghcr.io/snoozeml/snoozeml:cuda' container",
+                            config.model_path
+                        ))
+                    })?;
                     (s, ExecutionProvider::Cuda)
                 }
                 #[cfg(not(feature = "cuda"))]
@@ -169,7 +179,13 @@ impl OrtBackend {
                         config.intra_threads,
                         config.inter_threads,
                         ExecutionProvider::TensorRt,
-                    )?;
+                    )
+                    .map_err(|e| {
+                        InferenceError::Runtime(format!(
+                            "Failed to initialize TensorRT execution provider for '{}': {e}. Ensure NVIDIA TensorRT, CUDA 13 runtime, and cuDNN 9 libraries are installed on your host PATH/LD_LIBRARY_PATH, or run the preconfigured 'ghcr.io/snoozeml/snoozeml:cuda' container",
+                            config.model_path
+                        ))
+                    })?;
                     (s, ExecutionProvider::TensorRt)
                 }
                 #[cfg(not(feature = "tensorrt"))]

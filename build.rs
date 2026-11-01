@@ -22,5 +22,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto/third_party/grpc_service.proto");
     println!("cargo:rerun-if-changed=proto/third_party/model_config.proto");
     println!("cargo:rerun-if-changed=proto/third_party/health.proto");
+
+    // Embed relative RPATHs (DT_RPATH via --disable-new-dtags) on Linux so the binary and
+    // dlopen'd execution providers automatically discover bundled ONNX Runtime libraries and
+    // host CUDA installations without requiring manual LD_LIBRARY_PATH exports.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "linux" {
+        println!(
+            "cargo:rustc-link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN/lib:$ORIGIN/../lib:$ORIGIN/../lib/snooze:$ORIGIN:/usr/local/cuda/lib64:/usr/local/cuda-13.0/lib64"
+        );
+    }
+
     Ok(())
 }

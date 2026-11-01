@@ -74,15 +74,36 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     find /app/target/release -maxdepth 1 -name "libonnxruntime*.so*" -exec cp -L -t /app/dist/lib/ {} +
 
 # ==============================================================================
-# 3C. BUILDER — CUDA (All backends + CUDA/TensorRT GPU + Python worker + all streams)
+# 3C. BUILDER — CUDA (All backends + CUDA/TensorRT GPU + Candle CUDA + all streams)
 # ==============================================================================
-FROM chef AS builder-cuda
+FROM nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04 AS builder-cuda
 WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    CUDA_HOME="/usr/local/cuda" \
+    CUDA_PATH="/usr/local/cuda" \
+    CUDA_COMPUTE_CAP="75" \
+    PATH="/usr/local/cuda/bin:${PATH}"
+
+# Install Cargo / Rust toolchain and compilation prerequisites
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    cmake \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo install cargo-chef --locked
+
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo chef cook --release \
-    --features "default,cuda,tensorrt,streams-all" \
+    --features "default,cuda,candle-cuda,tensorrt,streams-all" \
     --bin snooze \
     --recipe-path recipe.json
 
@@ -90,7 +111,7 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build --release \
-    --features "default,cuda,tensorrt,streams-all" \
+    --features "default,cuda,candle-cuda,tensorrt,streams-all" \
     --bin snooze && \
     mkdir -p /app/dist/bin /app/dist/lib && \
     touch /app/dist/lib/.keep && \
@@ -178,15 +199,53 @@ USER appuser
 # ==============================================================================
 # 4D. TARGET: CUDA (Default — Full features, GPU acceleration & Python worker)
 # ==============================================================================
-FROM base-python AS cuda
+FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS cuda
 
-# NVIDIA Container Runtime hooks (compatible with both x86_64 and aarch64/sbsa)
-ENV NVIDIA_VISIBLE_DEVICES="all" \
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    libssl3t64 \
+    libgomp1 \
+    python3 \
+    python3-numpy \
+    python3-requests \
+    && rm -rf /var/lib/apt/lists/*
+
+# Security: Create non-privileged system user and group (UID 10001)
+RUN useradd -u 10001 -m -U -s /sbin/nologin appuser && \
+    mkdir -p /models /app /home/appuser/.cache && \
+    chown -R appuser:appuser /models /app /home/appuser
+
+# Bundle the pure-Python snoozeml package from source
+COPY python/snoozeml /opt/snoozeml/snoozeml
+
+ENV SNOOZE_MODELS_DIR="/models" \
+    RUST_LOG="info" \
+    HF_HOME="/home/appuser/.cache/huggingface" \
+    SNOOZE_PYTHON="/usr/bin/python3" \
+    PYTHONPATH="/opt/snoozeml" \
+    PYTHONUNBUFFERED="1" \
+    PIP_BREAK_SYSTEM_PACKAGES="1" \
+    NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
-    LD_LIBRARY_PATH="/usr/local/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/sbsa-linux/lib:/app"
+    LD_LIBRARY_PATH="/usr/local/lib:/usr/local/cuda/lib64:/app"
+
+WORKDIR /app
+
+EXPOSE 8080 50051
+
+VOLUME ["/models"]
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health/live || exit 1
 
 COPY --from=builder-cuda /app/dist/bin/snooze /usr/local/bin/snooze
 COPY --from=builder-cuda /app/dist/lib/ /usr/local/lib/
 RUN rm -f /usr/local/lib/.keep && ldconfig
 
 USER appuser
+
+ENTRYPOINT ["snooze"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080", "--models-dir", "/models"]

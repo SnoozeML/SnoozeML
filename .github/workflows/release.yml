@@ -29,25 +29,21 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact_name: snooze-linux-x86_64
-            features: "streams-all,cuda,tensorrt"
-            rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
+            features: "streams-all,cuda,candle-cuda,tensorrt"
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: snooze-linux-aarch64
             features: "streams-all,cuda,tensorrt,ort/lax-feature-matching"
-            rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
 
           # Lightweight CPU-only builds (all backends and all streams, CPU execution only)
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact_name: snooze-linux-x86_64-cpu
             features: "streams-all"
-            rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: snooze-linux-aarch64-cpu
             features: "streams-all"
-            rpath_flags: "-C link-arg=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"
 
     steps:
       - name: Checkout repository
@@ -60,7 +56,24 @@ jobs:
             pkg-config \
             libssl-dev \
             ca-certificates \
-            build-essential
+            build-essential \
+            cmake \
+            wget
+
+      - name: Install CUDA 13.0 and cuDNN 9 (for Linux x86_64 CUDA builds)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && contains(matrix.features, 'cuda')
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cuda-toolkit-13-0 \
+            libcudnn9-cuda-13 \
+            libcudnn9-dev-cuda-13
+          echo "/usr/local/cuda-13.0/bin" >> $GITHUB_PATH
+          echo "CUDA_HOME=/usr/local/cuda-13.0" >> $GITHUB_ENV
+          echo "CUDA_PATH=/usr/local/cuda-13.0" >> $GITHUB_ENV
+          echo "CUDA_COMPUTE_CAP=75" >> $GITHUB_ENV
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -73,8 +86,6 @@ jobs:
           key: ${{ matrix.target }}-${{ matrix.artifact_name }}
 
       - name: Build release binary
-        env:
-          RUSTFLAGS: ${{ matrix.rpath_flags }}
         run: |
           cargo build --release --bin snooze --target ${{ matrix.target }} --features "${{ matrix.features }}"
 

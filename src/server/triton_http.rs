@@ -171,11 +171,10 @@ fn decode_http_binary_tensor(
                 )));
             }
             Ok(raw
-                .chunks_exact(4)
-                .map(|b| {
-                    let arr: [u8; 4] = b.try_into().unwrap_or([0; 4]);
-                    f32::from_le_bytes(arr)
-                })
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
                 .collect())
         }
         "FP64" => {
@@ -191,11 +190,10 @@ fn decode_http_binary_tensor(
                 )));
             }
             Ok(raw
-                .chunks_exact(8)
-                .map(|b| {
-                    let arr: [u8; 8] = b.try_into().unwrap_or([0; 8]);
-                    f64::from_le_bytes(arr) as f32
-                })
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|b| f64::from_le_bytes(*b) as f32)
                 .collect())
         }
         "INT32" => {
@@ -211,11 +209,10 @@ fn decode_http_binary_tensor(
                 )));
             }
             Ok(raw
-                .chunks_exact(4)
-                .map(|b| {
-                    let arr: [u8; 4] = b.try_into().unwrap_or([0; 4]);
-                    i32::from_le_bytes(arr) as f32
-                })
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| i32::from_le_bytes(*b) as f32)
                 .collect())
         }
         "INT64" => {
@@ -231,11 +228,10 @@ fn decode_http_binary_tensor(
                 )));
             }
             Ok(raw
-                .chunks_exact(8)
-                .map(|b| {
-                    let arr: [u8; 8] = b.try_into().unwrap_or([0; 8]);
-                    i64::from_le_bytes(arr) as f32
-                })
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|b| i64::from_le_bytes(*b) as f32)
                 .collect())
         }
         "BOOL" | "UINT8" => {

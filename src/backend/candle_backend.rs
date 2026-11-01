@@ -144,7 +144,11 @@ impl CandleBackend {
                         Some((dev, "candle-cuda"))
                     }
                     Err(e) => {
-                        tracing::info!(model = %config.model_path, error = %e, "CUDA GPU unavailable for Candle; checking next option");
+                        tracing::warn!(
+                            model = %config.model_path,
+                            error = %e,
+                            "Auto device: CUDA GPU unavailable for Candle (requires NVIDIA driver + CUDA 13 runtime on host, or use ghcr.io/snoozeml/snoozeml:cuda); falling back to CPU"
+                        );
                         None
                     }
                 };
@@ -202,7 +206,7 @@ impl CandleBackend {
             CandleDevice::Cuda(idx) => {
                 let dev = Device::new_cuda(idx).map_err(|e| {
                     InferenceError::Runtime(format!(
-                        "Failed to initialize CUDA device {idx} for Candle model '{}': {e}",
+                        "Failed to initialize CUDA device {idx} for Candle model '{}': {e}. Ensure an NVIDIA GPU driver and CUDA 13 runtime libraries are installed on your host, or run the preconfigured 'ghcr.io/snoozeml/snoozeml:cuda' container",
                         config.model_path
                     ))
                 })?;

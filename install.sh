@@ -378,6 +378,22 @@ case ":$PATH:" in
         ;;
 esac
 
+# On Linux standard installs with an NVIDIA GPU, check for host CUDA 13 & cuDNN 9 runtime libraries
+if [ "$PLATFORM_OS" = "linux" ] && [ "$VARIANT" = "standard" ] && command -v nvidia-smi >/dev/null 2>&1; then
+    HAS_CUDA13=0
+    if command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q "libcudart.so.13" && ldconfig -p 2>/dev/null | grep -q "libcudnn.so.9"; then
+        HAS_CUDA13=1
+    elif [ -e "/usr/local/cuda-13.0/lib64/libcudart.so.13" ] || [ -e "/usr/local/cuda/lib64/libcudart.so.13" ]; then
+        HAS_CUDA13=1
+    fi
+    if [ "$HAS_CUDA13" = "0" ]; then
+        printf "\n${YELLOW}GPU Note:${RESET} NVIDIA GPU detected, but CUDA 13 runtime / cuDNN 9 shared libraries were not found on the host.\n"
+        printf "  • SnoozeML will automatically fall back to CPU when ${BOLD}device = \"auto\"${RESET}.\n"
+        printf "  • To enable bare-metal GPU acceleration, install CUDA 13 runtime & cuDNN 9 (e.g. ${BOLD}sudo apt-get install cuda-runtime-13-0 libcudnn9-cuda-13${RESET})\n"
+        printf "    or use the preconfigured container: ${BOLD}docker run --gpus all -p 8080:8080 ghcr.io/snoozeml/snoozeml:cuda${RESET}\n"
+    fi
+fi
+
 printf "\n${GREEN}${BOLD}SnoozeML is installed!${RESET} Quick commands to get started:\n"
 printf "  ${BOLD}snooze status${RESET}                                  # Check running daemon status\n"
 printf "  ${BOLD}snooze download BAAI/bge-small-en-v1.5 -o %s${RESET} # Download a model\n" "$MODELS_DIR"

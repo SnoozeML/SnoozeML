@@ -76,6 +76,9 @@ irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
 $env:SNOOZE_VARIANT="cpu"; irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
 ```
 
+> [!NOTE]
+> **Bare-Metal NVIDIA GPU Prerequisites:** To keep binary downloads small (~50 MB instead of ~2 GB), prebuilt binaries dynamically link against your host's **CUDA 13 Runtime** (`libcudart` / `libcublas` 13) and **cuDNN 9** (`libcudnn` 9) libraries (e.g. `sudo apt-get install cuda-runtime-13-0 libcudnn9-cuda-13` on Ubuntu/Debian). With `device = "auto"` (the default), SnoozeML automatically logs a warning and falls back to CPU if CUDA libraries are absent; if `device = "cuda"` is explicitly configured, it returns an explicit error with setup instructions. For a zero-setup GPU environment with CUDA 13 + cuDNN 9 pre-bundled, use the `ghcr.io/snoozeml/snoozeml:cuda` container image.
+
 **From Source:** (Rust 1.75+):
 
 ```bash
