@@ -48,6 +48,28 @@ def is_docker_available() -> bool:
         return False
 
 
+def find_snooze_image() -> str:
+    """Resolves the container image: SNOOZE_IMAGE env var -> local docker images -> ghcr.io fallback."""
+    if env_image := os.environ.get("SNOOZE_IMAGE"):
+        return env_image
+
+    # Auto-detect local images first
+    for candidate in ("snooze:local", "snoozeml:latest", "snooze:latest", "ghcr.io/snoozeml/snoozeml:latest"):
+        try:
+            res = subprocess.run(
+                ["docker", "image", "inspect", candidate],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            if res.returncode == 0:
+                return candidate
+        except Exception:
+            pass
+
+    return "ghcr.io/snoozeml/snoozeml:latest"
+
+
 @dataclass(frozen=True)
 class ContainerDaemonEndpoints:
     """Connection details, fitted reference models, and ground truth for containerized SnoozeML."""
@@ -135,7 +157,7 @@ description = "Real Scikit-Learn LogisticRegression ONNX pipeline in container"
         encoding="utf-8",
     )
 
-    image_name = os.environ.get("SNOOZE_IMAGE", "ghcr.io/snoozeml/snoozeml:latest")
+    image_name = find_snooze_image()
 
     # Launch container using testcontainers DockerCompose or DockerContainer
     compose_file = REPO_ROOT / "e2e" / "docker" / "docker-compose.test.yml"
@@ -151,6 +173,7 @@ description = "Real Scikit-Learn LogisticRegression ONNX pipeline in container"
             import shutil
             shutil.copytree(str(models_dir), str(compose_models_dir))
 
+        os.environ["SNOOZE_IMAGE"] = image_name
         compose = DockerCompose(
             filepath=str(compose_dir),
             compose_file_name="docker-compose.test.yml",
