@@ -86,11 +86,14 @@ pytest e2e/streams/test_stream_mock.py -v
 
 ### 4. Run Containerized Daemon Tests (Docker Compose & testcontainers)
 ```bash
-# Run the full containerized daemon test suite against real models
+# Build the local Docker image first
+docker build --target slim -t snooze:local .
+
+# Run the full containerized daemon test suite against local container and real models
 pytest e2e/docker -v
 
-# Target a specific SnoozeML container image flavor (e.g. CUDA or local build)
-SNOOZE_IMAGE=ghcr.io/snoozeml/snoozeml:cuda pytest e2e/docker -v
+# Optionally target a specific custom local image tag
+SNOOZE_IMAGE=snooze:my-tag pytest e2e/docker -v
 ```
 
 ---

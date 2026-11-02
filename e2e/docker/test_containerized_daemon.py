@@ -30,8 +30,11 @@ if str(PYTHON_SDK) not in sys.path:
 import numpy as np
 import pytest
 
-# Soft dependencies with clean pytest skipping
-testcontainers = pytest.importorskip("testcontainers", reason="testcontainers is required for containerized tests")
+# Ensure testcontainers is present
+try:
+    import testcontainers
+except ImportError as err:
+    pytest.fail(f"testcontainers is required for containerized tests: {err}")
 
 
 def is_docker_available() -> bool:
@@ -49,12 +52,12 @@ def is_docker_available() -> bool:
 
 
 def find_snooze_image() -> str:
-    """Resolves the container image: SNOOZE_IMAGE env var -> local docker images -> ghcr.io fallback."""
+    """Resolves the container image: strictly local images only (no remote pulling)."""
     if env_image := os.environ.get("SNOOZE_IMAGE"):
         return env_image
 
-    # Auto-detect local images first
-    for candidate in ("snooze:local", "snoozeml:latest", "snooze:latest", "ghcr.io/snoozeml/snoozeml:latest"):
+    # Check local image candidates only
+    for candidate in ("snooze:local", "snoozeml:local", "snooze:latest", "snoozeml:latest"):
         try:
             res = subprocess.run(
                 ["docker", "image", "inspect", candidate],
@@ -67,7 +70,11 @@ def find_snooze_image() -> str:
         except Exception:
             pass
 
-    return "ghcr.io/snoozeml/snoozeml:latest"
+    pytest.fail(
+        "Local Docker image 'snooze:local' not found in Docker engine. "
+        "Build it locally with 'docker build --target slim -t snooze:local .' before running container tests. "
+        "Remote image pulling is strictly disabled."
+    )
 
 
 @dataclass(frozen=True)
@@ -90,7 +97,7 @@ def containerized_snooze(
 ) -> Generator[ContainerDaemonEndpoints, None, None]:
     """Prepares real models and spins up a SnoozeML container via testcontainers."""
     if not is_docker_available():
-        pytest.skip("Docker daemon is not running on this host; skipping containerized test suite")
+        pytest.fail("Docker daemon is not running or not reachable on this host; required for containerized test suite")
 
     from sklearn.datasets import load_iris
     from sklearn.linear_model import LogisticRegression
@@ -202,7 +209,7 @@ description = "Real Scikit-Learn LogisticRegression ONNX pipeline in container"
             http_port = int(container.get_exposed_port(8080))
             grpc_port = int(container.get_exposed_port(50051))
         except Exception as e2:
-            pytest.skip(f"Failed to spawn SnoozeML container (is image '{image_name}' built/pulled?): {exc}; {e2}")
+            pytest.fail(f"Failed to spawn SnoozeML container '{image_name}': {exc}; {e2}")
 
     http_url = f"{host}:{http_port}"
     grpc_url = f"{host}:{grpc_port}"
@@ -410,21 +417,10 @@ def test_container_triton_v2_inference(
     containerized_snooze: ContainerDaemonEndpoints,
 ) -> None:
     """Verifies that third-party tritonclient.http communicates successfully with the containerized daemon."""
-    triton_http = pytest.importorskip("tritonclient.http")
-
-    # Probe if running container image supports Triton v2 protocol
     try:
-        probe_req = urllib.request.Request(f"http://{containerized_snooze.http_url}/v2/health/live")
-        with urllib.request.urlopen(probe_req) as probe_resp:
-            has_triton = probe_resp.status == 200
-    except Exception:
-        has_triton = False
-
-    if not has_triton:
-        pytest.skip(
-            "Triton v2 endpoints (/v2/*) are not present in this container image build "
-            "(image predates Triton implementation; rebuild locally with 'docker build -t snooze:local .')"
-        )
+        import tritonclient.http as triton_http
+    except ImportError as err:
+        pytest.fail(f"tritonclient.http is required for Triton v2 container test: {err}")
 
     with triton_http.InferenceServerClient(url=containerized_snooze.http_url) as client:
         assert client.is_server_live() is True
@@ -491,14 +487,8 @@ def test_container_dynamic_model_upload(
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(req) as resp:
-            assert resp.status in (200, 201)
-    except urllib.error.HTTPError as err:
-        err_msg = err.read().decode("utf-8", errors="replace")
-        if err.code in (403, 500) and any(kw in err_msg.lower() for kw in ("permission", "read-only", "readonly", "models_dir", "os error")):
-            pytest.skip(f"Container models directory is read-only or not writable by container user: {err_msg}")
-        raise
+    with urllib.request.urlopen(req) as resp:
+        assert resp.status in (200, 201)
 
     # Now infer on the dynamically uploaded model
     payload = {

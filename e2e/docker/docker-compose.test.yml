@@ -1,6 +1,11 @@
 services:
   snooze:
-    image: ${SNOOZE_IMAGE:-ghcr.io/snoozeml/snoozeml:latest}
+    image: ${SNOOZE_IMAGE:-snooze:local}
+    user: "0:0"
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: slim
     environment:
       - RUST_LOG=info
     ports:
