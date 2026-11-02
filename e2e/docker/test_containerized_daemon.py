@@ -521,3 +521,274 @@ def test_container_dynamic_model_upload(
         temp_path.unlink()
     except Exception:
         pass
+
+
+def test_container_native_grpc_inference(
+    containerized_snooze: ContainerDaemonEndpoints,
+) -> None:
+    """Verifies native gRPC inference (snoozeml.v1.InferenceService/Infer) against containerized daemon."""
+    from snoozeml import SnoozeClient
+
+    x = containerized_snooze.sample_x
+    with SnoozeClient(
+        http_endpoint=f"http://{containerized_snooze.http_url}",
+        grpc_endpoint=containerized_snooze.grpc_url,
+    ) as client:
+        # 1. Infer on real_xgb over gRPC
+        res_xgb = client.infer("real_xgb", {"input": x}, use_grpc=True)
+        assert res_xgb.model_id == "real_xgb"
+        actual_xgb = res_xgb.get_numpy()
+        np.testing.assert_allclose(actual_xgb, containerized_snooze.expected_xgb_prob, atol=1e-4)
+
+        # 2. Infer on real_onnx over gRPC
+        res_onnx = client.infer("real_onnx", {"input": x}, use_grpc=True)
+        assert res_onnx.model_id == "real_onnx"
+        actual_onnx = res_onnx.get_numpy()
+        np.testing.assert_allclose(actual_onnx, containerized_snooze.expected_onnx_prob, atol=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_container_concurrent_micro_batching(
+    containerized_snooze: ContainerDaemonEndpoints,
+) -> None:
+    """Verifies that the container's DynamicBatcher coalesces concurrent async requests along Axis(0)."""
+    import asyncio
+    from snoozeml import AsyncSnoozeClient
+
+    x = containerized_snooze.sample_x
+    # Prepare slices with varying sizes to test Axis(0) collation and splitting
+    slices = [
+        x[0:1],  # 1 sample
+        x[1:3],  # 2 samples
+        x[3:6],  # 3 samples
+        x[0:2],  # 2 samples
+        x[2:5],  # 3 samples
+        x[5:6],  # 1 sample
+    ]
+
+    async with AsyncSnoozeClient(http_endpoint=f"http://{containerized_snooze.http_url}") as client:
+        # Fire all requests concurrently
+        tasks = [
+            client.infer("real_xgb", {"input": sl})
+            for sl in slices
+        ]
+        results = await asyncio.gather(*tasks)
+
+        assert len(results) == len(slices)
+        for sl, res in zip(slices, results):
+            expected = containerized_snooze.xgb_clf.predict_proba(sl).astype(np.float32)
+            actual = res.get_numpy()
+            assert actual.shape == expected.shape
+            np.testing.assert_allclose(actual, expected, atol=1e-4)
+
+
+def test_container_pin_and_unpin_lifecycle(
+    containerized_snooze: ContainerDaemonEndpoints,
+) -> None:
+    """Tests runtime pinning and unpinning of models inside the container."""
+    base_url = f"http://{containerized_snooze.http_url}"
+
+    # 1. real_onnx starts pinned=False
+    with urllib.request.urlopen(f"{base_url}/v1/models") as resp:
+        catalog = {m["id"]: m for m in json.loads(resp.read().decode("utf-8"))}
+        assert catalog["real_onnx"]["pinned"] is False
+
+    # 2. Pin real_onnx
+    pin_req = urllib.request.Request(f"{base_url}/v1/models/real_onnx/pin", method="POST")
+    with urllib.request.urlopen(pin_req) as resp:
+        assert resp.status == 200
+
+    # Verify pinned status updated
+    with urllib.request.urlopen(f"{base_url}/v1/models") as resp:
+        catalog = {m["id"]: m for m in json.loads(resp.read().decode("utf-8"))}
+        assert catalog["real_onnx"]["pinned"] is True
+
+    # 3. Unpin real_onnx
+    unpin_req = urllib.request.Request(f"{base_url}/v1/models/real_onnx/unpin", method="POST")
+    with urllib.request.urlopen(unpin_req) as resp:
+        assert resp.status == 200
+
+    with urllib.request.urlopen(f"{base_url}/v1/models") as resp:
+        catalog = {m["id"]: m for m in json.loads(resp.read().decode("utf-8"))}
+        assert catalog["real_onnx"]["pinned"] is False
+
+
+def test_container_prometheus_metrics(
+    containerized_snooze: ContainerDaemonEndpoints,
+) -> None:
+    """Verifies that Prometheus metrics are exposed, valid, and monotonically incremented."""
+    base_url = f"http://{containerized_snooze.http_url}"
+
+    # 1. Fetch initial metrics
+    with urllib.request.urlopen(f"{base_url}/metrics") as resp:
+        assert resp.status == 200
+        initial_metrics = resp.read().decode("utf-8")
+        assert "snoozeml_requests_total" in initial_metrics
+        assert "snoozeml_inference_latency_seconds_total" in initial_metrics
+        assert "snoozeml_model_deallocations_total" in initial_metrics
+
+    # 2. Run an inference request
+    x = containerized_snooze.sample_x[:1]
+    payload = {
+        "inputs": [
+            {
+                "name": "input",
+                "shape": list(x.shape),
+                "data": x.flatten().tolist(),
+            }
+        ]
+    }
+    infer_req = urllib.request.Request(
+        f"{base_url}/v1/models/real_xgb/infer",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(infer_req) as resp:
+        assert resp.status == 200
+
+    # 3. Fetch updated metrics and verify
+    with urllib.request.urlopen(f"{base_url}/metrics") as resp:
+        updated_metrics = resp.read().decode("utf-8")
+        assert "snoozeml_requests_total" in updated_metrics
+
+
+def test_container_error_handling_negative_invariants(
+    containerized_snooze: ContainerDaemonEndpoints,
+) -> None:
+    """Verifies negative edge cases, 404s, 400s, and defensive behavior in the container daemon."""
+    base_url = f"http://{containerized_snooze.http_url}"
+
+    # 1. 404 Not Found on unknown model inference
+    unknown_req = urllib.request.Request(
+        f"{base_url}/v1/models/ghost_model_404/infer",
+        data=b'{"inputs": []}',
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(unknown_req)
+    assert exc_info.value.code == 404
+    err_body = json.loads(exc_info.value.read().decode("utf-8"))
+    assert "error" in err_body
+
+    # 2. 400 Bad Request on shape/feature count mismatch (10 features sent to 4-feature model)
+    bad_shape_payload = {
+        "inputs": [
+            {
+                "name": "input",
+                "shape": [1, 10],
+                "data": [1.0] * 10,
+            }
+        ]
+    }
+    mismatch_req = urllib.request.Request(
+        f"{base_url}/v1/models/real_xgb/infer",
+        data=json.dumps(bad_shape_payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(mismatch_req)
+    assert exc_info.value.code == 400
+    err_body = json.loads(exc_info.value.read().decode("utf-8"))
+    assert "error" in err_body
+
+    # 3. 400 Bad Request on malformed JSON payload
+    corrupt_req = urllib.request.Request(
+        f"{base_url}/v1/models/real_xgb/infer",
+        data=b"THIS_IS_NOT_VALID_JSON{{{",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(corrupt_req)
+    assert exc_info.value.code == 400
+
+    # 4. 404 Not Found on unknown model unload
+    unknown_unload = urllib.request.Request(
+        f"{base_url}/v1/models/ghost_model_404/unload",
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(unknown_unload)
+    assert exc_info.value.code == 404
+
+
+def test_container_triton_v2_model_metadata_and_repository(
+    containerized_snooze: ContainerDaemonEndpoints,
+) -> None:
+    """Verifies Triton v2 metadata, readiness, and repository operations via tritonclient.http."""
+    try:
+        import tritonclient.http as triton_http
+    except ImportError as err:
+        pytest.fail(f"tritonclient.http is required for Triton v2 repository test: {err}")
+
+    with triton_http.InferenceServerClient(url=containerized_snooze.http_url) as client:
+        # 1. Model metadata
+        meta = client.get_model_metadata("real_xgb")
+        assert meta["name"] == "real_xgb"
+        assert len(meta["inputs"]) > 0
+
+        # 2. Model config
+        cfg = client.get_model_config("real_xgb")
+        assert cfg["name"] == "real_xgb"
+
+        # 3. Model readiness
+        assert client.is_model_ready("real_xgb") is True
+
+        # 4. Repository index
+        repo = client.get_model_repository_index()
+        repo_names = [m["name"] for m in repo]
+        assert "real_xgb" in repo_names
+        assert "real_onnx" in repo_names
+
+        # 5. Unload & load model via Triton v2 protocol
+        client.unload_model("real_xgb")
+        assert client.is_model_ready("real_xgb") is False
+
+        client.load_model("real_xgb")
+        assert client.is_model_ready("real_xgb") is True
+
+
+def test_container_python_sdk_high_level_client(
+    containerized_snooze: ContainerDaemonEndpoints,
+) -> None:
+    """Verifies that the official Python SDK client works seamlessly with the container."""
+    from snoozeml import SnoozeClient
+
+    with SnoozeClient(http_endpoint=f"http://{containerized_snooze.http_url}") as client:
+        # 1. models.list()
+        models = client.models.list()
+        model_ids = {m.id for m in models}
+        assert "real_xgb" in model_ids
+        assert "real_onnx" in model_ids
+
+        # 2. models.get()
+        xgb_info = client.models.get("real_xgb")
+        assert xgb_info.id == "real_xgb"
+        assert xgb_info.is_loaded is True
+
+        # 3. infer() high level ergonomic API
+        x = containerized_snooze.sample_x
+        resp = client.infer("real_xgb", {"input": x})
+        actual = resp.get_numpy()
+        np.testing.assert_allclose(actual, containerized_snooze.expected_xgb_prob, atol=1e-4)
+
+        # 4. infer() on real_onnx
+        resp_onnx = client.infer("real_onnx", {"input": x})
+        actual_onnx = resp_onnx.get_numpy()
+        np.testing.assert_allclose(actual_onnx, containerized_snooze.expected_onnx_prob, atol=1e-4)
+
+
+def test_container_models_refresh_endpoint(
+    containerized_snooze: ContainerDaemonEndpoints,
+) -> None:
+    """Verifies the POST /v1/models/refresh endpoint triggers re-scan without failure."""
+    base_url = f"http://{containerized_snooze.http_url}"
+    req = urllib.request.Request(f"{base_url}/v1/models/refresh", method="POST")
+    with urllib.request.urlopen(req) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode("utf-8"))
+        assert data["status"] == "refreshed"
+        assert "models" in data
