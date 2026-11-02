@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  snooze:
+    image: ${SNOOZE_IMAGE:-ghcr.io/snoozeml/snoozeml:latest}
+    container_name: snooze-e2e-container
+    environment:
+      - RUST_LOG=info
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    volumes:
+      - ./models:/models:ro
+    command:
+      - snooze
+      - serve
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --grpc-port
+      - "50051"
+      - --models-dir
+      - "/models"

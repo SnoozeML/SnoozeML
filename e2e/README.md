@@ -16,6 +16,9 @@ e2e/
 ├── triton/                 # Triton Inference Server protocol interoperability suite
 │   ├── test_triton_grpc.py # Official tritonclient.grpc suite (unary, bidirectional streaming, RBAC)
 │   └── test_triton_http.py # Official tritonclient.http suite (JSON, Triton binary extensions, RBAC)
+├── docker/                 # Containerized SnoozeML suite (using testcontainers & Docker Compose)
+│   ├── docker-compose.test.yml     # Compose service specification for testing the SnoozeML container
+│   └── test_containerized_daemon.py # Full endpoint & real model validation against OCI container
 └── streams/                # Event streaming broker integration suite (using testcontainers)
     ├── test_stream_redis.py    # Redis Streams driver test suite (redis:7-alpine)
     ├── test_stream_rabbitmq.py # RabbitMQ AMQP 0-9-1 driver test suite (rabbitmq:3-management-alpine)
@@ -79,6 +82,15 @@ pytest e2e/streams/test_stream_kafka.py -v
 
 # Run Mock stream and Python SDK MockStreamClient tests
 pytest e2e/streams/test_stream_mock.py -v
+```
+
+### 4. Run Containerized Daemon Tests (Docker Compose & testcontainers)
+```bash
+# Run the full containerized daemon test suite against real models
+pytest e2e/docker -v
+
+# Target a specific SnoozeML container image flavor (e.g. CUDA or local build)
+SNOOZE_IMAGE=ghcr.io/snoozeml/snoozeml:cuda pytest e2e/docker -v
 ```
 
 ---
