@@ -1,18 +1,14 @@
-version: '3.8'
-
 services:
   snooze:
     image: ${SNOOZE_IMAGE:-ghcr.io/snoozeml/snoozeml:latest}
-    container_name: snooze-e2e-container
     environment:
       - RUST_LOG=info
     ports:
-      - "8080:8080"
-      - "50051:50051"
+      - "8080"
+      - "50051"
     volumes:
-      - ./models:/models:ro
+      - ./models:/models
     command:
-      - snooze
       - serve
       - --host
       - "0.0.0.0"
@@ -22,3 +18,9 @@ services:
       - "50051"
       - --models-dir
       - "/models"
+    healthcheck:
+      test: ["CMD", "snooze", "status", "--endpoint", "http://127.0.0.1:8080"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+      start_period: 1s
