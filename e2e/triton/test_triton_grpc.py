@@ -18,6 +18,7 @@ Exercises:
 
 from __future__ import annotations
 
+import os
 from functools import partial
 from pathlib import Path
 import queue
@@ -268,3 +269,37 @@ def test_triton_grpc_rbac_authentication(
         assert client.is_model_ready("secure_iris", headers=adm_headers) is False
         client.load_model("secure_iris", headers=adm_headers)
         assert client.is_model_ready("secure_iris", headers=adm_headers) is True
+
+
+def test_triton_grpc_explicit_cuda_device_handling(
+    triton_daemon: TritonDaemonEndpoints,
+) -> None:
+    """Verifies that gRPC model load for provider='cuda' fails explicitly on CPU runners and executes on GPU."""
+    with triton_grpc.InferenceServerClient(url=triton_daemon.grpc_url) as client:
+        require_gpu = bool(os.environ.get("REQUIRE_GPU"))
+
+        try:
+            client.load_model("cuda_rf")
+            loaded = True
+        except InferenceServerException as exc:
+            loaded = False
+            err_msg = str(exc)
+
+        if loaded:
+            assert client.is_model_ready("cuda_rf") is True
+            x = triton_daemon.sample_x
+            inp = triton_grpc.InferInput("input", list(x.shape), "FP32")
+            inp.set_data_from_numpy(x)
+            res = client.infer("cuda_rf", inputs=[inp])
+            expected = triton_daemon.sklearn_rf.predict_proba(x).astype(np.float32)
+            np.testing.assert_allclose(res.as_numpy("output"), expected, atol=1e-4)
+            client.unload_model("cuda_rf")
+        else:
+            if require_gpu:
+                pytest.fail(f"REQUIRE_GPU is set but loading cuda_rf failed via gRPC: {err_msg}")
+            assert (
+                "cuda" in err_msg.lower()
+                or "internal" in err_msg.lower()
+                or "unavailable" in err_msg.lower()
+            )
+            assert client.is_model_ready("cuda_rf") is False

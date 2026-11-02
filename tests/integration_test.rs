@@ -1427,3 +1427,70 @@ fn test_sanitize_paths_in_error_response() {
         "Cannot load '[redacted_path]': invalid header"
     );
 }
+
+
+#[tokio::test]
+async fn test_e2e_explicit_cuda_model_load_rejection_or_success() {
+    let registry = ModelRegistry::new();
+    let metrics = ServerMetrics::new_shared();
+
+    let mut temp_path = std::env::temp_dir();
+    temp_path.push(format!(
+        "snooze_test_cuda_e2e_{}.onnx",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&temp_path, b"dummy_onnx_bytes").unwrap();
+
+    let config = ModelConfig {
+        id: "cuda-model".to_string(),
+        onnx_path: temp_path.to_string_lossy().to_string(),
+        idle_timeout: Duration::from_secs(60),
+        max_batch_size: 4,
+        max_batch_delay: Duration::from_millis(10),
+        provider: Some("cuda".to_string()),
+        description: Some("Model explicitly requesting CUDA".to_string()),
+        ..Default::default()
+    };
+    registry.register(ModelController::new(config)).await;
+
+    let app = create_router(AppState::new(registry.clone(), metrics.clone()));
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/models/cuda-model/load")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+
+    if status == StatusCode::OK {
+        println!("CUDA model load succeeded on GPU");
+    } else {
+        if std::env::var("REQUIRE_GPU").is_ok() {
+            let _ = std::fs::remove_file(&temp_path);
+            panic!("REQUIRE_GPU is set but /load failed with status {status}: {body_str}");
+        }
+        assert!(
+            status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::SERVICE_UNAVAILABLE,
+            "Expected 500 or 503 for failed CUDA load, got {status}: {body_str}"
+        );
+        assert!(
+            body_str.to_lowercase().contains("cuda"),
+            "Error body must mention CUDA failure reason, got: {body_str}"
+        );
+
+        let controller = registry.get("cuda-model").await.unwrap();
+        assert!(
+            !controller.is_loaded().await,
+            "Model explicitly configured for CUDA must never transition to loaded/Ready on CPU"
+        );
+    }
+
+    let _ = std::fs::remove_file(&temp_path);
+}

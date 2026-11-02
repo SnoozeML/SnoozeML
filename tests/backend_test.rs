@@ -212,6 +212,167 @@ fn test_ort_backend_real_model_skippable() {
     assert_eq!(backend.provider_name(), "onnxruntime-cpu");
 }
 
+#[cfg(feature = "ort-backend")]
+#[test]
+fn test_ort_backend_cuda_explicit_failure_or_execution() {
+    let mut temp_path = std::env::temp_dir();
+    temp_path.push(format!(
+        "test_cuda_probe_{}.onnx",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&temp_path, b"probe_dummy_onnx_bytes").unwrap();
+
+    let config = OrtConfig {
+        model_path: temp_path.to_string_lossy().to_string(),
+        provider: ExecutionProvider::Cuda,
+        intra_threads: 1,
+        inter_threads: 1,
+    };
+
+    #[cfg(not(feature = "cuda"))]
+    {
+        if std::env::var("REQUIRE_GPU").is_ok() {
+            let _ = std::fs::remove_file(&temp_path);
+            panic!("REQUIRE_GPU is set but snooze was compiled without the 'cuda' feature");
+        }
+        let res = OrtBackend::new(&config);
+        assert!(matches!(
+            res,
+            Err(InferenceError::Runtime(ref msg)) if msg.contains("compiled without the 'cuda' feature")
+        ));
+    }
+
+    #[cfg(feature = "cuda")]
+    {
+        let res = OrtBackend::new(&config);
+        match res {
+            Ok(backend) => {
+                assert_eq!(backend.provider_name(), "onnxruntime-cuda");
+            }
+            Err(InferenceError::Runtime(ref msg)) => {
+                if std::env::var("REQUIRE_GPU").is_ok() {
+                    let _ = std::fs::remove_file(&temp_path);
+                    panic!("REQUIRE_GPU is set but OrtBackend CUDA failed to initialize: {msg}");
+                }
+                assert!(
+                    msg.contains("Failed to initialize CUDA")
+                        || msg.contains("CUDA 13")
+                        || msg.contains("Failed to register CUDA provider")
+                        || msg.contains("Failed to create SessionBuilder"),
+                    "Expected CUDA failure diagnostic or provider error, got: {msg}"
+                );
+            }
+            Err(other) => {
+                eprintln!("OrtBackend CUDA initialization proceeded to model parse: {other:?}");
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&temp_path);
+}
+
+#[cfg(feature = "ort-backend")]
+#[test]
+fn test_ort_backend_tensorrt_explicit_failure_or_execution() {
+    let mut temp_path = std::env::temp_dir();
+    temp_path.push(format!(
+        "test_tensorrt_probe_{}.onnx",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&temp_path, b"probe_dummy_onnx_bytes").unwrap();
+
+    let config = OrtConfig {
+        model_path: temp_path.to_string_lossy().to_string(),
+        provider: ExecutionProvider::TensorRt,
+        intra_threads: 1,
+        inter_threads: 1,
+    };
+
+    #[cfg(not(feature = "tensorrt"))]
+    {
+        if std::env::var("REQUIRE_GPU").is_ok() {
+            let _ = std::fs::remove_file(&temp_path);
+            panic!("REQUIRE_GPU is set but snooze was compiled without the 'tensorrt' feature");
+        }
+        let res = OrtBackend::new(&config);
+        assert!(matches!(
+            res,
+            Err(InferenceError::Runtime(ref msg)) if msg.contains("compiled without the 'tensorrt' feature")
+        ));
+    }
+
+    #[cfg(feature = "tensorrt")]
+    {
+        let res = OrtBackend::new(&config);
+        match res {
+            Ok(backend) => {
+                assert_eq!(backend.provider_name(), "onnxruntime-tensorrt");
+            }
+            Err(InferenceError::Runtime(ref msg)) => {
+                if std::env::var("REQUIRE_GPU").is_ok() {
+                    let _ = std::fs::remove_file(&temp_path);
+                    panic!("REQUIRE_GPU is set but OrtBackend TensorRT failed to initialize: {msg}");
+                }
+                assert!(
+                    msg.contains("Failed to initialize TensorRT")
+                        || msg.contains("TensorRT")
+                        || msg.contains("Failed to register TensorRT provider")
+                        || msg.contains("Failed to create SessionBuilder"),
+                    "Expected TensorRT failure diagnostic, got: {msg}"
+                );
+            }
+            Err(other) => {
+                eprintln!("OrtBackend TensorRT initialization proceeded to model parse: {other:?}");
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&temp_path);
+}
+
+#[cfg(feature = "ort-backend")]
+#[test]
+fn test_ort_backend_coreml_explicit_failure_or_execution() {
+    let mut temp_path = std::env::temp_dir();
+    temp_path.push(format!(
+        "test_coreml_probe_{}.onnx",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&temp_path, b"probe_dummy_onnx_bytes").unwrap();
+
+    let config = OrtConfig {
+        model_path: temp_path.to_string_lossy().to_string(),
+        provider: ExecutionProvider::CoreML,
+        intra_threads: 1,
+        inter_threads: 1,
+    };
+
+    #[cfg(not(all(target_os = "macos", feature = "coreml")))]
+    {
+        let res = OrtBackend::new(&config);
+        assert!(matches!(
+            res,
+            Err(InferenceError::Runtime(ref msg)) if msg.contains("CoreML is not supported or enabled in this build")
+        ));
+    }
+
+    #[cfg(all(target_os = "macos", feature = "coreml"))]
+    {
+        let _ = OrtBackend::new(&config);
+    }
+
+    let _ = std::fs::remove_file(&temp_path);
+}
+
 // ============================================================================
 // Candle / Safetensors Backend Tests
 // ============================================================================
@@ -445,6 +606,10 @@ mod candle_tests {
         // Test explicit CandleDevice::Cuda(0) without candle-cuda feature fails explicitly instead of falling back
         #[cfg(not(feature = "candle-cuda"))]
         {
+            if std::env::var("REQUIRE_GPU").is_ok() {
+                let _ = std::fs::remove_file(&model_path);
+                panic!("REQUIRE_GPU is set but binary was compiled without 'candle-cuda'");
+            }
             let config_cuda = CandleConfig {
                 model_path: model_path.to_str().unwrap().to_string(),
                 device: CandleDevice::Cuda(0),
@@ -453,6 +618,25 @@ mod candle_tests {
                 CandleBackend::new(&config_cuda),
                 Err(InferenceError::Runtime(_))
             ));
+        }
+
+        // When candle-cuda is enabled, verify it either initializes CUDA or reports runtime failure without falling back
+        #[cfg(feature = "candle-cuda")]
+        {
+            let config_cuda = CandleConfig {
+                model_path: model_path.to_str().unwrap().to_string(),
+                device: CandleDevice::Cuda(0),
+            };
+            match CandleBackend::new(&config_cuda) {
+                Ok(b) => assert_eq!(b.provider_name(), "candle-cuda"),
+                Err(e) => {
+                    if std::env::var("REQUIRE_GPU").is_ok() {
+                        let _ = std::fs::remove_file(&model_path);
+                        panic!("REQUIRE_GPU is set but Candle CUDA initialization failed: {e}");
+                    }
+                    assert!(matches!(e, InferenceError::Runtime(_)));
+                }
+            }
         }
 
         let _ = std::fs::remove_file(&model_path);

@@ -419,6 +419,9 @@ fn test_supported_architecture_resolution() {
 fn test_device_execution_cpu_and_cuda() {
     let model_dir = Path::new("models/all-MiniLM-L6-v2");
     if !model_dir.exists() {
+        if std::env::var("REQUIRE_GPU").is_ok() {
+            panic!("REQUIRE_GPU is set but models/all-MiniLM-L6-v2 is not present");
+        }
         eprintln!("Skipping device test: models/all-MiniLM-L6-v2 not present");
         return;
     }
@@ -430,24 +433,37 @@ fn test_device_execution_cpu_and_cuda() {
     assert_eq!(cpu_emb.shape, vec![1, 384]);
 
     // 2. CUDA execution if GPU is physically available
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "candle-cuda"))]
     {
-        if let Ok(cuda_dev) = Device::new_cuda(0) {
-            println!("CUDA GPU detected; running test on CUDA Device");
-            let cuda_model = LocalModelLoader::load(model_dir, &cuda_dev).unwrap();
-            let cuda_emb = cuda_model.encode_text(&["CUDA execution test"]).unwrap();
-            assert_eq!(cuda_emb.shape, vec![1, 384]);
+        match Device::new_cuda(0) {
+            Ok(cuda_dev) => {
+                println!("CUDA GPU detected; running test on CUDA Device");
+                let cuda_model = LocalModelLoader::load(model_dir, &cuda_dev).unwrap();
+                let cuda_emb = cuda_model.encode_text(&["CUDA execution test"]).unwrap();
+                assert_eq!(cuda_emb.shape, vec![1, 384]);
 
-            // Ensure CUDA and CPU results match within tolerance
-            let cpu_slice = cpu_emb.data.as_slice().unwrap();
-            let cuda_slice = cuda_emb.data.as_slice().unwrap();
-            for (c, g) in cpu_slice.iter().zip(cuda_slice.iter()) {
-                assert!((c - g).abs() < 1e-4);
+                // Ensure CUDA and CPU results match within tolerance
+                let cpu_slice = cpu_emb.data.as_slice().unwrap();
+                let cuda_slice = cuda_emb.data.as_slice().unwrap();
+                for (c, g) in cpu_slice.iter().zip(cuda_slice.iter()) {
+                    assert!((c - g).abs() < 1e-4);
+                }
             }
-        } else {
-            println!(
-                "CUDA feature enabled, but no physical CUDA GPU available; skipping CUDA execution"
-            );
+            Err(e) => {
+                if std::env::var("REQUIRE_GPU").is_ok() {
+                    panic!("REQUIRE_GPU is set but physical CUDA GPU initialization failed: {e}");
+                }
+                println!(
+                    "SKIPPED on CPU-only: CUDA feature enabled, but no physical CUDA GPU available ({e})"
+                );
+            }
         }
+    }
+    #[cfg(not(any(feature = "cuda", feature = "candle-cuda")))]
+    {
+        if std::env::var("REQUIRE_GPU").is_ok() {
+            panic!("REQUIRE_GPU is set but binary was compiled without 'cuda' or 'candle-cuda' feature");
+        }
+        println!("SKIPPED on CPU-only: Neither 'cuda' nor 'candle-cuda' feature was enabled");
     }
 }

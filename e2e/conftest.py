@@ -333,6 +333,16 @@ max_batch_delay_ms = 5
 idle_timeout_secs = 300
 pinned = false
 description = "Scikit-Learn Iris RandomForest (ONNX, unpinned)"
+
+[[models]]
+id = "cuda_rf"
+path = "{sklearn_rf_path.as_posix()}"
+max_batch_size = 16
+max_batch_delay_ms = 5
+idle_timeout_secs = 300
+pinned = false
+provider = "cuda"
+description = "Scikit-Learn Iris RandomForest (ONNX, explicit CUDA provider)"
 {xgb_toml_block}
 """.strip(),
         encoding="utf-8",

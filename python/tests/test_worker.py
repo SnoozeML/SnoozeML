@@ -24,6 +24,7 @@ from snoozeml.worker import (
     handle_infer,
     load_user_model,
     read_frame,
+    resolve_device,
     run_check,
     write_frame,
 )
@@ -67,10 +68,19 @@ def test_read_exact_partial_eof():
 def test_classify_error():
     assert classify_error(MemoryError("out of host memory")) == "oom"
     assert classify_error(RuntimeError("CUDA error: out of memory")) == "oom"
+    assert classify_error(RuntimeError("CUDA out of memory. Tried to allocate 1024 MiB")) == "oom"
     assert classify_error(ValueError("bad shape")) == "invalid_input"
     assert classify_error(KeyError("missing_tensor")) == "invalid_input"
     assert classify_error(WorkerError("custom_kind", "test")) == "custom_kind"
     assert classify_error(ZeroDivisionError("division by zero")) == "runtime"
+
+
+def test_resolve_device():
+    assert resolve_device("cpu") == "cpu"
+    assert resolve_device("cuda") == "cuda"
+    assert resolve_device("cuda:0") == "cuda:0"
+    auto_dev = resolve_device("auto")
+    assert auto_dev in ("cpu", "cuda", "mps")
 
 
 def test_tensor_encode_decode_numpy():
@@ -205,4 +215,3 @@ def test_run_check_honors_snooze_model_json():
 
         code = run_check(Args())
         assert code == 0
-
