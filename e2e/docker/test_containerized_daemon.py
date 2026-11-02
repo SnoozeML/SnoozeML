@@ -435,7 +435,9 @@ def test_container_triton_v2_inference(
         inp = triton_http.InferInput("input", list(x.shape), "FP32")
         inp.set_data_from_numpy(x, binary_data=True)
         res = client.infer("real_xgb", inputs=[inp])
-        actual_out = res.as_numpy("output")
+        out_name = res.get_response()["outputs"][0]["name"]
+        actual_out = res.as_numpy(out_name)
+        assert actual_out is not None
 
         np.testing.assert_allclose(actual_out, containerized_snooze.expected_xgb_prob, atol=1e-4)
 
