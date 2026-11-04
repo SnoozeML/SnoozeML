@@ -317,7 +317,9 @@ fn test_ort_backend_tensorrt_explicit_failure_or_execution() {
             Err(InferenceError::Runtime(ref msg)) => {
                 if std::env::var("REQUIRE_GPU").is_ok() {
                     let _ = std::fs::remove_file(&temp_path);
-                    panic!("REQUIRE_GPU is set but OrtBackend TensorRT failed to initialize: {msg}");
+                    panic!(
+                        "REQUIRE_GPU is set but OrtBackend TensorRT failed to initialize: {msg}"
+                    );
                 }
                 assert!(
                     msg.contains("Failed to initialize TensorRT")

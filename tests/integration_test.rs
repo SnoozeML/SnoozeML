@@ -1433,7 +1433,6 @@ fn test_sanitize_paths_in_error_response() {
     );
 }
 
-
 #[tokio::test]
 async fn test_e2e_explicit_cuda_model_load_rejection_or_success() {
     let registry = ModelRegistry::new();
@@ -1482,7 +1481,8 @@ async fn test_e2e_explicit_cuda_model_load_rejection_or_success() {
             panic!("REQUIRE_GPU is set but /load failed with status {status}: {body_str}");
         }
         assert!(
-            status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::SERVICE_UNAVAILABLE,
+            status == StatusCode::INTERNAL_SERVER_ERROR
+                || status == StatusCode::SERVICE_UNAVAILABLE,
             "Expected 500 or 503 for failed CUDA load, got {status}: {body_str}"
         );
         assert!(
