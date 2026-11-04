@@ -82,7 +82,7 @@ WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME="/usr/local/cuda" \
     CUDA_PATH="/usr/local/cuda" \
-    CUDA_COMPUTE_CAP="75" \
+    CUDA_COMPUTE_CAP="80" \
     PATH="/usr/local/cuda/bin:${PATH}"
 
 # Install Cargo / Rust toolchain and compilation prerequisites

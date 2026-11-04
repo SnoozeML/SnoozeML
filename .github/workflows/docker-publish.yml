@@ -1,4 +1,4 @@
-﻿name: Publish Container Images (GHCR)
+name: Publish Container Images (GHCR)
 
 on:
   push:

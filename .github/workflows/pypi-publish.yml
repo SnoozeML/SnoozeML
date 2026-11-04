@@ -5,8 +5,9 @@ on:
     branches:
       - main
     paths:
-      # Only trigger when the Python SDK manifest is touched
+      # Only trigger when the Python SDK manifest or workflow is touched
       - "python/pyproject.toml"
+      - ".github/workflows/pypi-publish.yml"
   workflow_dispatch:
     inputs:
       force_publish:
@@ -21,8 +22,8 @@ permissions:
 jobs:
   # ============================================================================
   # JOB 1: Version Change Gatekeeper
-  # Inspects python/pyproject.toml and compares against the previous commit.
-  # If version did not change (e.g. only dependencies/metadata touched), skips publishing.
+  # Inspects python/pyproject.toml and checks PyPI & the previous commit.
+  # If the version is not yet on PyPI (or changed from the previous commit), publishes.
   # ============================================================================
   check-version:
     name: Check version bump
@@ -41,22 +42,26 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Compare python/pyproject.toml version with previous commit
+      - name: Compare python/pyproject.toml version with PyPI and previous commit
         id: version_diff
         env:
           BEFORE_SHA: ${{ github.event.before }}
           FORCE_PUBLISH: ${{ inputs.force_publish || 'false' }}
         run: |
           python - << 'EOF'
-          import os, subprocess, sys, tomllib
+          import os, subprocess, sys, tomllib, urllib.error, urllib.request
 
           pyproject_path = "python/pyproject.toml"
           try:
-              with open(pyproject_path, "rb") as f:
-                  new_ver = tomllib.load(f).get("project", {}).get("version")
+              with open(pyproject_path, "r", encoding="utf-8-sig") as f:
+                  new_ver = tomllib.loads(f.read()).get("project", {}).get("version")
           except Exception as e:
               print(f"Error reading {pyproject_path}: {e}", file=sys.stderr)
-              new_ver = None
+              sys.exit(1)
+
+          if not new_ver:
+              print(f"Error: project.version missing in {pyproject_path}", file=sys.stderr)
+              sys.exit(1)
 
           old_ver = None
           candidates = []
@@ -71,23 +76,46 @@ jobs:
                       ["git", "show", rev],
                       stderr=subprocess.DEVNULL
                   )
-                  old_ver = tomllib.loads(old_bytes.decode("utf-8")).get("project", {}).get("version")
+                  old_ver = tomllib.loads(old_bytes.decode("utf-8-sig")).get("project", {}).get("version")
                   if old_ver:
                       print(f"Retrieved previous version ({old_ver}) from git rev: {rev}")
                       break
               except Exception:
                   continue
 
-          force = os.environ.get("FORCE_PUBLISH", "false").lower() == "true"
-          changed = "true" if (new_ver and (new_ver != old_ver or force)) else "false"
+          # Check whether new_ver is already published on PyPI
+          already_on_pypi = None
+          pypi_url = f"https://pypi.org/pypi/snoozeml/{new_ver}/json"
+          try:
+              req = urllib.request.Request(pypi_url, method="HEAD")
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  already_on_pypi = (resp.status == 200)
+          except urllib.error.HTTPError as e:
+              if e.code == 404:
+                  already_on_pypi = False
+          except Exception as e:
+              print(f"Warning: could not query PyPI ({e}); falling back to git diff")
 
-          print(f"Version comparison: old={old_ver} -> new={new_ver} (changed={changed}, force={force})")
+          force = os.environ.get("FORCE_PUBLISH", "false").lower() == "true"
+          if force:
+              changed = "true"
+          elif already_on_pypi is False:
+              changed = "true"
+          elif already_on_pypi is True:
+              changed = "false"
+          else:
+              changed = "true" if (new_ver != old_ver) else "false"
+
+          print(
+              f"Version check: old={old_ver} -> new={new_ver}, "
+              f"already_on_pypi={already_on_pypi}, force={force} => changed={changed}"
+          )
 
           github_output = os.environ.get("GITHUB_OUTPUT")
           if github_output:
               with open(github_output, "a") as out:
                   out.write(f"changed={changed}\n")
-                  out.write(f"version={new_ver or ''}\n")
+                  out.write(f"version={new_ver}\n")
                   out.write(f"old_version={old_ver or ''}\n")
           EOF
 
