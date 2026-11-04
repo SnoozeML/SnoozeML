@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from snoozeml.models import ModelInfo, ModelState
+import pytest
+
+from snoozeml.models import ModelInfo, ModelState, ModelStats, StatDuration
 
 
 def test_model_state_parsing() -> None:
@@ -42,3 +44,58 @@ def test_model_info_serialization_and_properties() -> None:
 
     idle_info = ModelInfo.from_dict({"id": "m2", "state": "idle", "onnx_path": "mock:test"})
     assert idle_info.is_loaded is False
+
+
+def test_stat_duration_and_model_stats_properties() -> None:
+    raw_stats = {
+        "name": "demo-model",
+        "version": "1",
+        "last_inference": 1730000000123,
+        "inference_count": 42,
+        "execution_count": 10,
+        "inference_stats": {
+            "success": {"count": 40, "ns": 80_000_000},
+            "fail": {"count": 2, "ns": 4_000_000},
+            "queue": {"count": 42, "ns": 21_000_000},
+            "compute_infer": {"count": 42, "ns": 60_000_000},
+        },
+    }
+
+    stats = ModelStats.from_dict(raw_stats)
+    assert stats.name == "demo-model"
+    assert stats.version == "1"
+    assert stats.last_inference_ms == 1730000000123
+    assert stats.inference_count == 42
+    assert stats.execution_count == 10
+
+    # StatDuration properties
+    assert stats.success.count == 40
+    assert stats.success.ns == 80_000_000
+    assert stats.success.ms == pytest.approx(80.0)
+    assert stats.success.secs == pytest.approx(0.08)
+    assert stats.success.avg_ms == pytest.approx(2.0)
+
+    assert stats.fail.count == 2
+    assert stats.fail.ns == 4_000_000
+    assert stats.fail.avg_ms == pytest.approx(2.0)
+
+    assert stats.queue.count == 42
+    assert stats.queue.ms == pytest.approx(21.0)
+    assert stats.compute_infer.ms == pytest.approx(60.0)
+
+    # Aggregated properties
+    assert stats.total_requests == 42
+    assert stats.error_rate == pytest.approx(2 / 42)
+
+    # Serialization roundtrip
+    serialized = stats.to_dict()
+    assert serialized["name"] == "demo-model"
+    assert serialized["inference_stats"]["success"]["count"] == 40
+    assert serialized["inference_stats"]["fail"]["count"] == 2
+
+    # Empty stats defaults
+    empty_stats = ModelStats.from_dict({})
+    assert empty_stats.name == ""
+    assert empty_stats.total_requests == 0
+    assert empty_stats.error_rate == 0.0
+    assert empty_stats.success.avg_ms == 0.0

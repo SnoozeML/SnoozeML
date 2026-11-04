@@ -53,7 +53,14 @@ from .logging import (
     mask_secret,
 )
 from .metrics import DaemonMetrics, parse_prometheus_metrics
-from .models import AsyncModelsManager, ModelInfo, ModelsManager, ModelState
+from .models import (
+    AsyncModelsManager,
+    ModelInfo,
+    ModelsManager,
+    ModelState,
+    ModelStats,
+    StatDuration,
+)
 from .streams import (
     MockStreamClient,
     RedisStreamClient,
@@ -73,7 +80,7 @@ try:
 except ImportError:
     pass
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 __all__ = [
     "__version__",
@@ -104,6 +111,8 @@ __all__ = [
     "MockStreamClient",
     "RedisStreamClient",
     "ModelInfo",
+    "ModelStats",
+    "StatDuration",
     "ModelState",
     "ModelsManager",
     "AsyncModelsManager",

@@ -16,8 +16,8 @@ sys.path.insert(0, str(SDK_ROOT))
 project = "SnoozeML Python SDK"
 copyright = "2026, SnoozeML Contributors"
 author = "SnoozeML Contributors"
-version = "0.1.0"
-release = "0.1.0"
+version = "0.1.2"
+release = "0.1.2"
 
 extensions = [
     "sphinx.ext.autodoc",

@@ -7,7 +7,19 @@ import json
 import os
 from pathlib import Path
 import time
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from typing import (
+    Any,
+    AsyncIterable,
+    AsyncIterator,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    Union,
+)
 import urllib.parse
 
 try:
@@ -47,7 +59,7 @@ from .inference import (
 )
 from .logging import get_logger, mask_secret, register_secret_for_redaction
 from .metrics import DaemonMetrics
-from .models import AsyncModelsManager, ModelInfo, ModelsManager
+from .models import AsyncModelsManager, ModelInfo, ModelsManager, ModelStats
 
 logger = get_logger("client")
 
@@ -607,6 +619,83 @@ class SnoozeClient:
             responses.append(resp)
         return concat_inference_responses(responses)
 
+    def stream_infer(
+        self,
+        model_id: str,
+        inputs: Union[Iterable[InputTypes], Iterator[InputTypes]],
+        *,
+        timeout: Optional[float] = None,
+        client_timeout_ms: Optional[int] = None,
+        parameters: Optional[Mapping[str, str]] = None,
+    ) -> Iterator[InferenceResponse]:
+        """Executes bi-directional streaming inference over persistent gRPC connection.
+
+        Feeds an incoming stream of tensor inputs through SnoozeML's dynamic batcher
+        and yields responses as they complete.
+
+        Args:
+            model_id: Target model identifier (e.g. ``"demo-model"``).
+            inputs: An iterable or generator yielding inputs (dictionaries of tensors, lists of TensorInput, etc.).
+            timeout: Optional overall gRPC stream timeout in seconds.
+            client_timeout_ms: Optional per-request deadline hint in milliseconds.
+            parameters: Optional execution parameters.
+
+        Yields:
+            :class:`~snoozeml.inference.InferenceResponse` for each completed frame from the stream.
+
+        Raises:
+            InvalidInputError: If ``model_id`` is empty.
+            SnoozeError: If gRPC is not available or on transport/authentication failure.
+        """
+        if not model_id or not str(model_id).strip():
+            raise InvalidInputError("model_id cannot be empty")
+        model_id = str(model_id).strip()
+
+        infer_stub, _ = self._ensure_grpc_stubs()
+        req_timeout = timeout if timeout is not None else self.timeout
+        metadata = self._grpc_metadata()
+
+        def _request_generator() -> Iterator[Any]:
+            for item in inputs:
+                tensor_inputs = normalize_inputs(item)
+                yield build_grpc_infer_request(
+                    model_id=model_id,
+                    tensors=tensor_inputs,
+                    client_timeout_ms=client_timeout_ms,
+                    parameters=parameters,
+                )
+
+        try:
+            resp_stream = infer_stub.StreamInfer(
+                _request_generator(),
+                timeout=req_timeout,
+                metadata=metadata,
+            )
+            for proto_resp in resp_stream:
+                resp = InferenceResponse.from_proto(proto_resp)
+                logger.debug(
+                    "Received streaming inference response",
+                    extra={
+                        "model_id": model_id,
+                        "transport": "grpc_stream",
+                        "server_duration_ms": round(resp.duration_ms, 3),
+                        "outputs": len(resp.outputs),
+                    },
+                )
+                yield resp
+        except _GrpcRpcError as exc:
+            mapped = map_grpc_error(exc, model_id=model_id)
+            logger.warning(
+                "gRPC streaming inference failed",
+                extra={
+                    "model_id": model_id,
+                    "transport": "grpc_stream",
+                    "grpc_code": mapped.grpc_code,
+                    "error": mapped.message,
+                },
+            )
+            raise mapped from exc
+
     def _infer_rest(
         self,
         model_id: str,
@@ -697,6 +786,14 @@ class SnoozeClient:
     def list_models(self) -> List[ModelInfo]:
         """Lists all registered models (shorthand for ``client.models.list()``)."""
         return self.models.list()
+
+    def get_model_stats(self, model_id: str) -> ModelStats:
+        """Retrieves cumulative execution statistics for a model (shorthand for ``client.models.get_stats(model_id)``)."""
+        return self.models.get_stats(model_id)
+
+    def list_model_stats(self) -> List[ModelStats]:
+        """Retrieves cumulative execution statistics across all models (shorthand for ``client.models.stats()``)."""
+        return self.models.stats()
 
     def get_model(self, model_id: str) -> ModelInfo:
         """Retrieves metadata for a single model (shorthand for ``client.models.get(model_id)``)."""
@@ -809,6 +906,7 @@ class SnoozeClient:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Uploads and dynamically registers a model via HTTP without mounting local volumes.
 
@@ -829,6 +927,7 @@ class SnoozeClient:
             max_replicas=max_replicas,
             routing_strategy=routing_strategy,
             device=device,
+            provider=provider,
         )
 
     def deploy_sklearn(
@@ -852,6 +951,7 @@ class SnoozeClient:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Converts a fitted scikit-learn model to ONNX and deploys it to SnoozeML in one call."""
         return self.models.deploy_sklearn(
@@ -873,6 +973,7 @@ class SnoozeClient:
             max_replicas=max_replicas,
             routing_strategy=routing_strategy,
             device=device,
+            provider=provider,
         )
 
     def deploy_torch(
@@ -896,6 +997,7 @@ class SnoozeClient:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Exports a PyTorch ``nn.Module`` to ONNX and deploys it to SnoozeML in one call."""
         return self.models.deploy_torch(
@@ -917,6 +1019,7 @@ class SnoozeClient:
             max_replicas=max_replicas,
             routing_strategy=routing_strategy,
             device=device,
+            provider=provider,
         )
 
     def deploy_xgboost(
@@ -935,6 +1038,7 @@ class SnoozeClient:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Exports an XGBoost model to ``.xgb.json`` and deploys it to SnoozeML in one call."""
         return self.models.deploy_xgboost(
@@ -951,6 +1055,7 @@ class SnoozeClient:
             max_replicas=max_replicas,
             routing_strategy=routing_strategy,
             device=device,
+            provider=provider,
         )
 
     def refresh_models(self) -> List[ModelInfo]:
@@ -1220,6 +1325,90 @@ class AsyncSnoozeClient:
         responses = await asyncio.gather(*(_run_chunk(c) for c in chunks))
         return concat_inference_responses(responses)
 
+    async def stream_infer(
+        self,
+        model_id: str,
+        inputs: Union[AsyncIterable[InputTypes], Iterable[InputTypes]],
+        *,
+        timeout: Optional[float] = None,
+        client_timeout_ms: Optional[int] = None,
+        parameters: Optional[Mapping[str, str]] = None,
+    ) -> AsyncIterator[InferenceResponse]:
+        """Asynchronously executes bi-directional streaming inference over persistent gRPC connection.
+
+        Args:
+            model_id: Target model identifier.
+            inputs: An async iterable or synchronous iterable yielding inputs.
+            timeout: Optional overall gRPC stream timeout in seconds.
+            client_timeout_ms: Optional per-request deadline hint in milliseconds.
+            parameters: Optional execution parameters.
+
+        Yields:
+            :class:`~snoozeml.inference.InferenceResponse` for each completed frame from the stream.
+
+        Raises:
+            InvalidInputError: If ``model_id`` is empty.
+            SnoozeError: If gRPC is not available or on transport/authentication failure.
+        """
+        if not model_id or not str(model_id).strip():
+            raise InvalidInputError("model_id cannot be empty")
+        model_id = str(model_id).strip()
+
+        infer_stub, _ = self._ensure_aio_grpc_stubs()
+        req_timeout = timeout if timeout is not None else self.timeout
+        metadata = self._sync_client._grpc_metadata()
+
+        async def _request_generator():
+            if hasattr(inputs, "__aiter__"):
+                async for item in inputs:
+                    tensor_inputs = normalize_inputs(item)
+                    yield build_grpc_infer_request(
+                        model_id=model_id,
+                        tensors=tensor_inputs,
+                        client_timeout_ms=client_timeout_ms,
+                        parameters=parameters,
+                    )
+            else:
+                for item in inputs:
+                    tensor_inputs = normalize_inputs(item)
+                    yield build_grpc_infer_request(
+                        model_id=model_id,
+                        tensors=tensor_inputs,
+                        client_timeout_ms=client_timeout_ms,
+                        parameters=parameters,
+                    )
+
+        try:
+            call = infer_stub.StreamInfer(
+                _request_generator(),
+                timeout=req_timeout,
+                metadata=metadata,
+            )
+            async for proto_resp in call:
+                resp = InferenceResponse.from_proto(proto_resp)
+                logger.debug(
+                    "Received async streaming inference response",
+                    extra={
+                        "model_id": model_id,
+                        "transport": "grpc_stream",
+                        "server_duration_ms": round(resp.duration_ms, 3),
+                        "outputs": len(resp.outputs),
+                    },
+                )
+                yield resp
+        except _GrpcRpcError as exc:
+            mapped = map_grpc_error(exc, model_id=model_id)
+            logger.warning(
+                "Async gRPC streaming inference failed",
+                extra={
+                    "model_id": model_id,
+                    "transport": "grpc_stream",
+                    "grpc_code": mapped.grpc_code,
+                    "error": mapped.message,
+                },
+            )
+            raise mapped from exc
+
     async def list_models(self) -> List[ModelInfo]:
         """Asynchronously lists all registered models."""
         return await self.models.list()
@@ -1227,6 +1416,14 @@ class AsyncSnoozeClient:
     async def get_model(self, model_id: str) -> ModelInfo:
         """Asynchronously retrieves metadata for a specific model."""
         return await self.models.get(model_id)
+
+    async def get_model_stats(self, model_id: str) -> ModelStats:
+        """Asynchronously retrieves cumulative execution statistics for a model."""
+        return await self.models.get_stats(model_id)
+
+    async def list_model_stats(self) -> List[ModelStats]:
+        """Asynchronously retrieves cumulative execution statistics across all models."""
+        return await self.models.stats()
 
     async def load_model(self, model_id: str, *, pin: bool = False) -> Dict[str, Any]:
         """Asynchronously loads a model into memory."""
@@ -1316,6 +1513,7 @@ class AsyncSnoozeClient:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Asynchronously uploads and dynamically registers a model via HTTP.
 
@@ -1336,6 +1534,7 @@ class AsyncSnoozeClient:
             max_replicas=max_replicas,
             routing_strategy=routing_strategy,
             device=device,
+            provider=provider,
         )
 
     async def deploy_sklearn(
@@ -1359,6 +1558,7 @@ class AsyncSnoozeClient:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Asynchronously converts a fitted scikit-learn model to ONNX and deploys it."""
         return await self.models.deploy_sklearn(
@@ -1380,6 +1580,7 @@ class AsyncSnoozeClient:
             max_replicas=max_replicas,
             routing_strategy=routing_strategy,
             device=device,
+            provider=provider,
         )
 
     async def deploy_torch(
@@ -1403,6 +1604,7 @@ class AsyncSnoozeClient:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Asynchronously exports a PyTorch ``nn.Module`` to ONNX and deploys it."""
         return await self.models.deploy_torch(
@@ -1424,6 +1626,7 @@ class AsyncSnoozeClient:
             max_replicas=max_replicas,
             routing_strategy=routing_strategy,
             device=device,
+            provider=provider,
         )
 
     async def deploy_xgboost(
@@ -1442,6 +1645,7 @@ class AsyncSnoozeClient:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Asynchronously exports an XGBoost model to ``.xgb.json`` and deploys it."""
         return await self.models.deploy_xgboost(
@@ -1458,6 +1662,7 @@ class AsyncSnoozeClient:
             max_replicas=max_replicas,
             routing_strategy=routing_strategy,
             device=device,
+            provider=provider,
         )
 
     async def refresh_models(self) -> List[ModelInfo]:

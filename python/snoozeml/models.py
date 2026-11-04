@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import tempfile
@@ -127,6 +127,143 @@ class ModelInfo:
         if self.description is not None:
             result["description"] = self.description
         return result
+
+
+@dataclass
+class StatDuration:
+    """Represents an execution count and cumulative duration in nanoseconds."""
+
+    count: int = 0
+    ns: int = 0
+
+    @property
+    def ms(self) -> float:
+        """Returns the cumulative duration converted to milliseconds."""
+        return self.ns / 1_000_000.0
+
+    @property
+    def secs(self) -> float:
+        """Returns the cumulative duration converted to seconds."""
+        return self.ns / 1_000_000_000.0
+
+    @property
+    def avg_ms(self) -> float:
+        """Returns the average latency per operation in milliseconds, or 0.0 if count is 0."""
+        return (self.ns / self.count / 1_000_000.0) if self.count > 0 else 0.0
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "StatDuration":
+        """Constructs a :class:`StatDuration` from a dictionary containing ``count`` and ``ns``."""
+        return cls(
+            count=int(data.get("count", 0)),
+            ns=int(data.get("ns", 0)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes this :class:`StatDuration` to a dictionary."""
+        return {"count": self.count, "ns": self.ns}
+
+
+@dataclass
+class ModelStats:
+    """Cumulative inference and batch execution statistics for a registered model.
+
+    Attributes:
+        name: Unique model identifier.
+        version: Model version string (e.g. ``"1"``).
+        last_inference_ms: Timestamp of the last served inference request in milliseconds since the Unix epoch.
+        inference_count: Cumulative number of individual inference items processed across batches.
+        execution_count: Cumulative number of backend forward pass batch executions.
+        success: Count and cumulative duration of successful inference requests.
+        fail: Count and cumulative duration of failed inference requests.
+        queue: Cumulative time spent waiting in queues or loading before execution.
+        compute_infer: Cumulative time spent executing backend forward passes.
+        raw: Full raw dictionary representation returned by the server.
+    """
+
+    name: str
+    version: str = "1"
+    last_inference_ms: int = 0
+    inference_count: int = 0
+    execution_count: int = 0
+    success: StatDuration = field(default_factory=StatDuration)
+    fail: StatDuration = field(default_factory=StatDuration)
+    queue: StatDuration = field(default_factory=StatDuration)
+    compute_infer: StatDuration = field(default_factory=StatDuration)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def id(self) -> str:
+        """Alias for :attr:`name` matching :class:`ModelInfo.id`."""
+        return self.name
+
+    @property
+    def model_id(self) -> str:
+        """Alias for :attr:`name` matching :class:`ModelInfo.id`."""
+        return self.name
+
+    @property
+    def total_requests(self) -> int:
+        """Returns the total number of processed requests (``success.count + fail.count``)."""
+        return self.success.count + self.fail.count
+
+    @property
+    def error_rate(self) -> float:
+        """Returns the fraction of failed requests (between 0.0 and 1.0)."""
+        return (self.fail.count / self.total_requests) if self.total_requests > 0 else 0.0
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ModelStats":
+        """Constructs a :class:`ModelStats` from a dictionary returned by ``GET /v2/models/{name}/stats``.
+
+        Args:
+            data: Single model stats entry parsed from server JSON.
+
+        Returns:
+            Populated :class:`ModelStats` instance.
+        """
+        inf_stats = data.get("inference_stats", {})
+        if not isinstance(inf_stats, Mapping):
+            inf_stats = {}
+
+        return cls(
+            name=str(data.get("name", "")),
+            version=str(data.get("version", "1")),
+            last_inference_ms=int(data.get("last_inference", 0)),
+            inference_count=int(data.get("inference_count", 0)),
+            execution_count=int(data.get("execution_count", 0)),
+            success=StatDuration.from_dict(
+                inf_stats.get("success", {}) if isinstance(inf_stats.get("success"), Mapping) else {}
+            ),
+            fail=StatDuration.from_dict(
+                inf_stats.get("fail", {}) if isinstance(inf_stats.get("fail"), Mapping) else {}
+            ),
+            queue=StatDuration.from_dict(
+                inf_stats.get("queue", {}) if isinstance(inf_stats.get("queue"), Mapping) else {}
+            ),
+            compute_infer=StatDuration.from_dict(
+                inf_stats.get("compute_infer", {}) if isinstance(inf_stats.get("compute_infer"), Mapping) else {}
+            ),
+            raw=dict(data),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes this :class:`ModelStats` back into a dictionary."""
+        if self.raw:
+            return dict(self.raw)
+        return {
+            "name": self.name,
+            "version": self.version,
+            "last_inference": self.last_inference_ms,
+            "inference_count": self.inference_count,
+            "execution_count": self.execution_count,
+            "inference_stats": {
+                "success": self.success.to_dict(),
+                "fail": self.fail.to_dict(),
+                "queue": self.queue.to_dict(),
+                "compute_infer": self.compute_infer.to_dict(),
+            },
+        }
 
 
 class ModelsManager:
@@ -267,6 +404,58 @@ class ModelsManager:
             else {"model_id": model_id, "status": "unpinned", "pinned": False}
         )
 
+    def get_stats(self, model_id: str) -> ModelStats:
+        """Retrieves cumulative inference and batch execution statistics for a registered model.
+
+        Queries the OIP v2 statistics endpoint (``GET /v2/models/{model_id}/stats``).
+
+        Args:
+            model_id: Target model identifier.
+
+        Returns:
+            :class:`ModelStats` containing request counts, latencies, and execution metrics.
+
+        Raises:
+            ModelNotFoundError: If ``model_id`` is not found or has no recorded statistics.
+            SnoozeError: On network or server failure.
+        """
+        if not model_id or not model_id.strip():
+            raise ModelNotFoundError("Model ID cannot be empty", status_code=404, model_id=model_id)
+
+        logger.debug("Fetching model execution statistics", extra={"model_id": model_id})
+        data = self._client._request_json("GET", f"/v2/models/{model_id}/stats", model_id=model_id)
+        if isinstance(data, Mapping):
+            stats_list = data.get("model_stats", [])
+            if isinstance(stats_list, list) and stats_list:
+                first = stats_list[0]
+                if isinstance(first, Mapping):
+                    return ModelStats.from_dict(first)
+
+        raise ModelNotFoundError(
+            f"No statistics available for model: {model_id}",
+            status_code=404,
+            model_id=model_id,
+        )
+
+    def stats(self) -> List[ModelStats]:
+        """Retrieves cumulative execution statistics across all registered models.
+
+        Queries the OIP v2 repository statistics endpoint (``GET /v2/models/stats``).
+
+        Returns:
+            List of :class:`ModelStats` instances.
+
+        Raises:
+            SnoozeError: On network or server failure.
+        """
+        logger.debug("Fetching all models execution statistics")
+        data = self._client._request_json("GET", "/v2/models/stats")
+        if isinstance(data, Mapping):
+            stats_list = data.get("model_stats", [])
+            if isinstance(stats_list, list):
+                return [ModelStats.from_dict(item) for item in stats_list if isinstance(item, Mapping)]
+        return []
+
     def refresh(self) -> List[ModelInfo]:
         """Triggers runtime discovery and refresh of models on the SnoozeML daemon via HTTP.
 
@@ -300,6 +489,7 @@ class ModelsManager:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Uploads a model file directly to the SnoozeML daemon via HTTP.
 
@@ -363,7 +553,10 @@ class ModelsManager:
             data["max_replicas"] = str(max_replicas)
         if routing_strategy is not None:
             data["routing_strategy"] = str(routing_strategy)
-        if device is not None:
+        effective_device = provider or device
+        if effective_device is not None:
+            data["provider"] = str(effective_device)
+        if effective_device is not None:
             data["device"] = str(device)
 
         logger.info(
@@ -439,6 +632,7 @@ class ModelsManager:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Converts a fitted scikit-learn estimator or ``Pipeline`` to ONNX and deploys it to SnoozeML in one call."""
         from .converters.sklearn import export_sklearn
@@ -492,6 +686,7 @@ class ModelsManager:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Exports a PyTorch ``nn.Module`` to ONNX and deploys it to SnoozeML in one call."""
         from .converters.torch import export_torch
@@ -540,6 +735,7 @@ class ModelsManager:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Exports an XGBoost model to ``.xgb.json`` and deploys it to SnoozeML in one call."""
         from .converters.xgboost import export_xgboost
@@ -648,6 +844,58 @@ class AsyncModelsManager:
             else {"model_id": model_id, "status": "unpinned", "pinned": False}
         )
 
+    async def get_stats(self, model_id: str) -> ModelStats:
+        """Asynchronously retrieves cumulative inference and batch execution statistics for a registered model.
+
+        Queries the OIP v2 statistics endpoint (``GET /v2/models/{model_id}/stats``).
+
+        Args:
+            model_id: Target model identifier.
+
+        Returns:
+            :class:`ModelStats` containing request counts, latencies, and execution metrics.
+
+        Raises:
+            ModelNotFoundError: If ``model_id`` is not found or has no recorded statistics.
+            SnoozeError: On network or server failure.
+        """
+        if not model_id or not model_id.strip():
+            raise ModelNotFoundError("Model ID cannot be empty", status_code=404, model_id=model_id)
+
+        logger.debug("Fetching model execution statistics (async)", extra={"model_id": model_id})
+        data = await self._client._request_json("GET", f"/v2/models/{model_id}/stats", model_id=model_id)
+        if isinstance(data, Mapping):
+            stats_list = data.get("model_stats", [])
+            if isinstance(stats_list, list) and stats_list:
+                first = stats_list[0]
+                if isinstance(first, Mapping):
+                    return ModelStats.from_dict(first)
+
+        raise ModelNotFoundError(
+            f"No statistics available for model: {model_id}",
+            status_code=404,
+            model_id=model_id,
+        )
+
+    async def stats(self) -> List[ModelStats]:
+        """Asynchronously retrieves cumulative execution statistics across all registered models.
+
+        Queries the OIP v2 repository statistics endpoint (``GET /v2/models/stats``).
+
+        Returns:
+            List of :class:`ModelStats` instances.
+
+        Raises:
+            SnoozeError: On network or server failure.
+        """
+        logger.debug("Fetching all models execution statistics (async)")
+        data = await self._client._request_json("GET", "/v2/models/stats")
+        if isinstance(data, Mapping):
+            stats_list = data.get("model_stats", [])
+            if isinstance(stats_list, list):
+                return [ModelStats.from_dict(item) for item in stats_list if isinstance(item, Mapping)]
+        return []
+
     async def refresh(self) -> List[ModelInfo]:
         """Asynchronously triggers runtime discovery and refresh of models on the daemon.
 
@@ -675,6 +923,7 @@ class AsyncModelsManager:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Asynchronously uploads a model file directly to the daemon via HTTP.
 
@@ -766,6 +1015,7 @@ class AsyncModelsManager:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Asynchronously converts a fitted scikit-learn estimator or ``Pipeline`` and deploys it."""
         return await asyncio.to_thread(
@@ -811,6 +1061,7 @@ class AsyncModelsManager:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Asynchronously exports a PyTorch ``nn.Module`` to ONNX and deploys it."""
         return await asyncio.to_thread(
@@ -851,6 +1102,7 @@ class AsyncModelsManager:
         max_replicas: Optional[int] = None,
         routing_strategy: Optional[str] = None,
         device: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> ModelInfo:
         """Asynchronously exports an XGBoost model to ``.xgb.json`` and deploys it."""
         return await asyncio.to_thread(

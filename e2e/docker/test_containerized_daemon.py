@@ -202,7 +202,9 @@ description = "Real Scikit-Learn LogisticRegression ONNX pipeline in container"
                 .with_bind_ports(8080, None)
                 .with_bind_ports(50051, None)
                 .with_volume_mapping(str(models_dir), "/models", mode="ro")
-                .with_command("snooze serve --host 0.0.0.0 --port 8080 --grpc-port 50051 --config /models/models.toml")
+                .with_command(
+                    ["serve", "--host", "0.0.0.0", "--port", "8080", "--grpc-port", "50051", "--config", "/models/models.toml"]
+                )
             )
             container.start()
             host = container.get_container_host_ip()

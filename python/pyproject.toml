@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snoozeml"
-version = "0.1.0"
+version = "0.1.2"
 description = "Official Python client and ML model conversion toolkit for the SnoozeML inference daemon"
 readme = "README.md"
 license = { text = "Apache-2.0" }

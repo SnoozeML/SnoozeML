@@ -247,7 +247,7 @@ class OnnxGraphBuilder:
         extra_opsets: Optional[Dict[str, int]] = None,
         ir_version: int = 8,
         producer_name: str = "snoozeml",
-        producer_version: str = "0.1.0",
+        producer_version: str = "0.1.2",
         doc_string: str = "",
     ) -> bytes:
         """Serializes the complete ONNX ``ModelProto`` into bytes."""

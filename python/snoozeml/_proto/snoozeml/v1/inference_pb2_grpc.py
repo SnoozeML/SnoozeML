@@ -3,10 +3,29 @@
 import grpc
 import warnings
 
-from . import inference_pb2 as snoozeml_dot_v1_dot_inference__pb2
+try:
+    from . import inference_pb2 as snoozeml_dot_v1_dot_inference__pb2
+except ImportError:
+    from snoozeml.v1 import inference_pb2 as snoozeml_dot_v1_dot_inference__pb2
 
-GRPC_GENERATED_VERSION = '1.62.0'
+GRPC_GENERATED_VERSION = '1.85.1'
 GRPC_VERSION = grpc.__version__
+_version_not_supported = False
+
+try:
+    from grpc._utilities import first_version_is_lower
+    _version_not_supported = first_version_is_lower(GRPC_VERSION, GRPC_GENERATED_VERSION)
+except ImportError:
+    _version_not_supported = True
+
+if _version_not_supported:
+    raise RuntimeError(
+        f'The grpc package installed is at version {GRPC_VERSION},'
+        + ' but the generated code in snoozeml/v1/inference_pb2_grpc.py depends on'
+        + f' grpcio>={GRPC_GENERATED_VERSION}.'
+        + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
+        + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
+    )
 
 
 class InferenceServiceStub:
@@ -24,6 +43,11 @@ class InferenceServiceStub:
                 request_serializer=snoozeml_dot_v1_dot_inference__pb2.ModelInferRequest.SerializeToString,
                 response_deserializer=snoozeml_dot_v1_dot_inference__pb2.ModelInferResponse.FromString,
                 _registered_method=True)
+        self.StreamInfer = channel.stream_stream(
+                '/snoozeml.v1.InferenceService/StreamInfer',
+                request_serializer=snoozeml_dot_v1_dot_inference__pb2.ModelInferRequest.SerializeToString,
+                response_deserializer=snoozeml_dot_v1_dot_inference__pb2.ModelInferResponse.FromString,
+                _registered_method=True)
 
 
 class InferenceServiceServicer:
@@ -37,11 +61,23 @@ class InferenceServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def StreamInfer(self, request_iterator, context):
+        """Executes bi-directional streaming inference for a registered model.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_InferenceServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Infer': grpc.unary_unary_rpc_method_handler(
                     servicer.Infer,
+                    request_deserializer=snoozeml_dot_v1_dot_inference__pb2.ModelInferRequest.FromString,
+                    response_serializer=snoozeml_dot_v1_dot_inference__pb2.ModelInferResponse.SerializeToString,
+            ),
+            'StreamInfer': grpc.stream_stream_rpc_method_handler(
+                    servicer.StreamInfer,
                     request_deserializer=snoozeml_dot_v1_dot_inference__pb2.ModelInferRequest.FromString,
                     response_serializer=snoozeml_dot_v1_dot_inference__pb2.ModelInferResponse.SerializeToString,
             ),
@@ -72,6 +108,33 @@ class InferenceService:
             request,
             target,
             '/snoozeml.v1.InferenceService/Infer',
+            snoozeml_dot_v1_dot_inference__pb2.ModelInferRequest.SerializeToString,
+            snoozeml_dot_v1_dot_inference__pb2.ModelInferResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamInfer(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/snoozeml.v1.InferenceService/StreamInfer',
             snoozeml_dot_v1_dot_inference__pb2.ModelInferRequest.SerializeToString,
             snoozeml_dot_v1_dot_inference__pb2.ModelInferResponse.FromString,
             options,

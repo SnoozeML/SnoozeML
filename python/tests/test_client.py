@@ -12,15 +12,22 @@ from snoozeml import (
     AsyncClient,
     AsyncSnoozeClient,
     Client,
+    InferenceResponse,
     InferenceTimeoutError,
+    InvalidInputError,
+    ModelNotFoundError,
+    ModelStats,
+    StatDuration,
     SnoozeClient,
     SnoozeConnectionError,
+    __version__,
 )
 
 
 def test_client_aliases() -> None:
     assert Client is SnoozeClient
     assert AsyncClient is AsyncSnoozeClient
+    assert __version__ == "0.1.2"
 
 
 def test_endpoint_resolution_variants(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,3 +99,71 @@ def test_async_client_connection_error_and_context_manager() -> None:
                 await aclient.models.list()
 
     asyncio.run(_check())
+
+
+def test_stream_infer_validation() -> None:
+    with SnoozeClient() as client:
+        with pytest.raises(InvalidInputError, match="model_id cannot be empty"):
+            list(client.stream_infer("", inputs=[]))
+
+    async def _async_check() -> None:
+        async with AsyncSnoozeClient() as aclient:
+            with pytest.raises(InvalidInputError, match="model_id cannot be empty"):
+                async for _ in aclient.stream_infer("   ", inputs=[]):
+                    pass
+
+    asyncio.run(_async_check())
+
+
+def test_model_stats_client_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_stats_resp = {
+        "model_stats": [
+            {
+                "name": "bert",
+                "version": "1",
+                "last_inference": 1730000000500,
+                "inference_count": 100,
+                "execution_count": 25,
+                "inference_stats": {
+                    "success": {"count": 98, "ns": 196_000_000},
+                    "fail": {"count": 2, "ns": 4_000_000},
+                    "queue": {"count": 100, "ns": 50_000_000},
+                    "compute_infer": {"count": 100, "ns": 150_000_000},
+                },
+            }
+        ]
+    }
+
+    with SnoozeClient() as client:
+        monkeypatch.setattr(client, "_request_json", lambda method, path, **kw: mock_stats_resp)
+
+        stats = client.get_model_stats("bert")
+        assert stats.name == "bert"
+        assert stats.inference_count == 100
+        assert stats.execution_count == 25
+        assert stats.success.count == 98
+        assert stats.fail.count == 2
+        assert stats.total_requests == 100
+        assert stats.error_rate == pytest.approx(0.02)
+
+        all_stats = client.list_model_stats()
+        assert len(all_stats) == 1
+        assert all_stats[0].name == "bert"
+
+        # Empty response raises ModelNotFoundError
+        monkeypatch.setattr(client, "_request_json", lambda method, path, **kw: {"model_stats": []})
+        with pytest.raises(ModelNotFoundError, match="No statistics available for model"):
+            client.get_model_stats("bert")
+
+    async def _async_stats_check() -> None:
+        async with AsyncSnoozeClient() as aclient:
+            monkeypatch.setattr(aclient, "_request_json", lambda method, path, **kw: asyncio.sleep(0, mock_stats_resp))
+            stats_async = await aclient.get_model_stats("bert")
+            assert stats_async.name == "bert"
+            assert stats_async.inference_count == 100
+
+            all_stats_async = await aclient.list_model_stats()
+            assert len(all_stats_async) == 1
+            assert all_stats_async[0].name == "bert"
+
+    asyncio.run(_async_stats_check())

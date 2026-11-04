@@ -33,6 +33,7 @@ from snoozeml import (
     InvalidInputError,
     ModelNotFoundError,
     ModelState,
+    ModelStats,
     PermissionDeniedError,
     SnoozeClient,
     export_sklearn,
@@ -339,6 +340,74 @@ def test_e2e_async_client_and_concurrent_batching(
                 np.testing.assert_allclose(resp.get_numpy(), expected[idx : idx + 1], atol=1e-4)
 
     asyncio.run(_run_async_checks())
+
+
+def test_e2e_model_stats(
+    live_snooze_daemon: Tuple[str, str, dict],
+) -> None:
+    http_ep, grpc_ep, artifacts = live_snooze_daemon
+    X_sample: np.ndarray = artifacts["X_sample"]
+
+    with SnoozeClient(http_endpoint=http_ep, grpc_endpoint=grpc_ep) as client:
+        # Run an inference to increment statistics
+        client.infer("demo-model", {"input": X_sample[:1]})
+
+        stats = client.models.get_stats("demo-model")
+        assert stats.name == "demo-model"
+        assert stats.inference_count >= 1
+        assert stats.success.count >= 1
+        assert stats.last_inference_ms > 0
+
+        # Query all model statistics
+        all_stats = client.models.stats()
+        assert len(all_stats) >= 1
+        assert any(s.name == "demo-model" for s in all_stats)
+
+        # Nonexistent model raises ModelNotFoundError
+        with pytest.raises(ModelNotFoundError):
+            client.models.get_stats("nonexistent_model")
+
+
+def test_e2e_streaming_inference(
+    live_snooze_daemon: Tuple[str, str, dict],
+) -> None:
+    http_ep, grpc_ep, _ = live_snooze_daemon
+
+    # 1. Synchronous bi-directional gRPC streaming
+    with SnoozeClient(http_endpoint=http_ep, grpc_endpoint=grpc_ep) as client:
+        frames = [
+            {"input": np.full((1, 4), float(i), dtype=np.float32)}
+            for i in range(5)
+        ]
+
+        responses = list(client.stream_infer("demo-model", frames))
+        assert len(responses) == 5
+        expected_mock = np.array([[0.0, 1.0, 2.0, 3.0]], dtype=np.float32)
+        for resp in responses:
+            assert resp.model_id == "demo-model"
+            out = resp.get_numpy()
+            assert out.shape == (1, 4)
+            np.testing.assert_allclose(out, expected_mock)
+
+    # 2. Asynchronous bi-directional gRPC streaming
+    async def _run_async_streaming() -> None:
+        async with AsyncSnoozeClient(http_endpoint=http_ep, grpc_endpoint=grpc_ep) as aclient:
+            async def _frame_generator():
+                for i in range(5):
+                    yield {"input": np.full((1, 4), float(i + 10), dtype=np.float32)}
+
+            received = []
+            async for resp in aclient.stream_infer("demo-model", _frame_generator()):
+                received.append(resp)
+
+            assert len(received) == 5
+            for resp in received:
+                assert resp.model_id == "demo-model"
+                out = resp.get_numpy()
+                assert out.shape == (1, 4)
+                np.testing.assert_allclose(out, expected_mock)
+
+    asyncio.run(_run_async_streaming())
 
 
 def test_e2e_error_handling_parity(
