@@ -1,4 +1,4 @@
-name: Publish Container Images (GHCR)
+﻿name: Publish Container Images (GHCR)
 
 on:
   push:
@@ -178,14 +178,14 @@ jobs:
             # Friendly aliases (:full for cuda, :lite for slim)
             type=raw,value=full,enable=${{ matrix.target == 'cuda' }}
             type=raw,value=lite,enable=${{ matrix.target == 'slim' }}
-            # Default tags (:latest, :0.1.1, :0.1) assigned to 'cuda'
+            # Default tags (:latest, :0.1.2, :0.1) assigned to 'cuda'
             type=raw,value=latest,enable=${{ matrix.is_default }}
             type=semver,pattern={{version}},value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.is_default }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.is_default }}
-            # Explicit versioned flavor tags (:0.1.1-cuda, :0.1.1-cpu, :0.1.1-slim)
+            # Explicit versioned flavor tags (:0.1.2-cuda, :0.1.2-cpu, :0.1.2-slim)
             type=semver,pattern={{version}}-${{ matrix.target }},value=${{ inputs.tag_name || github.ref_name }}
             type=semver,pattern={{major}}.{{minor}}-${{ matrix.target }},value=${{ inputs.tag_name || github.ref_name }}
-            # Explicit versioned alias tags (:0.1.1-full, :0.1.1-lite)
+            # Explicit versioned alias tags (:0.1.2-full, :0.1.2-lite)
             type=semver,pattern={{version}}-full,value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.target == 'cuda' }}
             type=semver,pattern={{version}}-lite,value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.target == 'slim' }}
 

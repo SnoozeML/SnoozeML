@@ -108,12 +108,12 @@ Every stream test runs against real fitted Scikit-Learn ONNX models (zero mock m
 
 | Test Scenario | Redis Streams | RabbitMQ | Kafka | Mock Stream | Notes |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Single Inference Happy Path** | PASS | PASS | XFAIL* | PASS | Validates output tensor shapes, probability sums ($\approx 1.0$), class argmax |
-| **Concurrent Micro-Batching** | PASS | PASS | XFAIL* | PASS | Validates Axis(0) batching, correlation IDs, and response fan-out |
-| **Custom Dynamic `reply_to`** | PASS | PASS | XFAIL* | PASS | Validates routing responses to per-request override topics/queues |
-| **Malformed JSON Payload (DLQ)** | PASS | PASS | XFAIL* | PASS | Poison-pill routing to DLQ with descriptive error diagnostics |
-| **Shape/Dimension Mismatch (DLQ)** | PASS | PASS | XFAIL* | PASS | Element count errors route to DLQ without crashing the worker task |
-| **Unregistered Model ID (DLQ)** | PASS | PASS | XFAIL* | PASS | Requests for unknown models route to DLQ with NotFound diagnostics |
+| **Single Inference Happy Path** | PASS | PASS | PASS | PASS | Validates output tensor shapes, probability sums ($\approx 1.0$), class argmax |
+| **Concurrent Micro-Batching** | PASS | PASS | PASS | PASS | Validates Axis(0) batching, correlation IDs, and response fan-out |
+| **Custom Dynamic `reply_to`** | PASS | PASS | PASS | PASS | Validates routing responses to per-request override topics/queues |
+| **Malformed JSON Payload (DLQ)** | PASS | PASS | PASS | PASS | Poison-pill routing to DLQ with descriptive error diagnostics |
+| **Shape/Dimension Mismatch (DLQ)** | PASS | PASS | PASS | PASS | Element count errors route to DLQ without crashing the worker task |
+| **Unregistered Model ID (DLQ)** | PASS | PASS | PASS | PASS | Requests for unknown models route to DLQ with NotFound diagnostics |
 
 ---
 
@@ -134,13 +134,7 @@ Every stream test runs against real fitted Scikit-Learn ONNX models (zero mock m
 - Tested via Python SDK `MockStreamClient` against real live `snooze serve` instances over HTTP/gRPC.
 - Successfully validates client-side and server-side envelope framing, correlation ID matching, and error handling.
 
-### 4. Apache Kafka (`src/stream/kafka.rs`) — Status: XFAIL (6/6) — Identified Issue in `src/`
-- **Symptom:**
-  When a single request is published to an input topic, the daemon publishes **multiple duplicate responses** (e.g. 5 identical responses) to the output topic or DLQ.
-- **Root Cause Analysis in `src/stream/kafka.rs`:**
-  1. `KafkaStreamDriver` maintains a single `offset: Arc<AtomicI64>`.
-  2. In `poll_next()`, records are fetched using `pc.fetch_records(current_offset, ...)` where `current_offset = self.offset.load(Ordering::Relaxed)`.
-  3. However, `self.offset` is **only updated inside `KafkaAcknowledger::ack()`**, which executes in an asynchronous background Tokio task **after** model inference completes.
-  4. While that inference task is executing in Tokio, the worker loop in `src/stream/mod.rs` continues polling `driver.poll_next()`. Because `self.offset` has not yet been advanced, `poll_next()` repeatedly fetches the exact same record from partition 0, spawning redundant duplicate inference tasks.
-- **Recommended Fix (for subsequent commit):**
-  In `KafkaStreamDriver`, decouple the fetch offset from the commit offset. Introduce an atomic `fetch_offset` that is advanced immediately when records are read from the partition client during `poll_next()`, while retaining `ack_offset` for partition offset commits.
+### 4. Apache Kafka (`src/stream/kafka.rs`) — Status: PASSING (6/6)
+- The Apache Kafka driver functions with `confluentinc/cp-kafka:7.6.0` via `rskafka`.
+- `KafkaStreamDriver` decouples `fetch_offset` from `committed_offset` and buffers multi-record partition batch fetches, ensuring each message is ingested once while maintaining commit-after-infer delivery guarantees.
+- Supports concurrent micro-batching, dynamic `reply_to` topic overrides, and Dead-Letter Queue (DLQ) routing for malformed payloads, shape mismatches, and unknown models.

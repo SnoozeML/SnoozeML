@@ -246,6 +246,9 @@ async fn test_auth_enabled_missing_credentials_returns_401() {
 
 #[tokio::test]
 async fn test_api_key_role_matrix() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("snooze_auth_matrix_test_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
     let registry = ModelRegistry::new();
     let metrics = ServerMetrics::new_shared();
     let model = create_test_model("model-matrix");
@@ -262,7 +265,11 @@ async fn test_api_key_role_matrix() {
         jwt: None,
     };
     let auth_svc = Arc::new(AuthService::new(auth_config).unwrap());
-    let app = create_router(AppState::new(registry, metrics).with_auth(auth_svc));
+    let app = create_router(
+        AppState::new(registry, metrics)
+            .with_auth(auth_svc)
+            .with_models_dir(&temp_dir),
+    );
 
     // 1. ReadOnly key:
     // Can read /v1/models
@@ -368,6 +375,8 @@ async fn test_api_key_role_matrix() {
         .unwrap();
     let resp = app.clone().oneshot(refresh_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
 
     // Can unload -> 200 OK
     let unload_req = Request::builder()
