@@ -1,18 +1,36 @@
 """End-to-end integration tests running the SnoozeML Python SDK against a containerized Rust daemon.
 
 Spawns a local CPU-only SnoozeML container (no CUDA) via testcontainers or Docker Compose
-to verify that all public methods on both synchronous `SnoozeClient` and asynchronous
-`AsyncSnoozeClient` operate seamlessly across container network boundaries:
-  1. Service health, readiness, discovery info, and Prometheus metrics.
-  2. Complete model lifecycle management (list, get, load, unload, evict, pin, unpin, stats, refresh).
-  3. Runtime model upload via the Python SDK client.
-  4. Numerical inference equivalence for pure-Rust tree (XGBoost) and ONNX (Scikit-Learn)
-     models across both HTTP REST and native gRPC transports.
-  5. Automatic dataset micro-batch chunking along Axis(0) (`infer_dataset`).
-  6. Bi-directional gRPC streaming (`stream_infer`).
-  7. High-concurrency async inference and Dynamic Micro-Batching (`AsyncSnoozeClient`).
-  8. 3-tier Role-Based Access Control (Admin, Inference, ReadOnly) and error handling parity.
-  9. Typed exception mapping for negative invariants (404 Not Found, 400 Bad Request, Auth errors).
+to verify that ALL endpoints and supported model architectures operate seamlessly across
+container network boundaries:
+
+1. Endpoints Covered:
+   - Health & Diagnostics: GET /health/live, GET /health/ready, GET /, GET /metrics, grpc.health.v1.Health/Check
+   - Model Lifecycle Management: GET /v1/models, POST /v1/models/{id}/load, POST /v1/models/{id}/unload,
+     POST /v1/models/{id}/pin, POST /v1/models/{id}/unpin, POST /v1/models/refresh, POST /v1/models/upload
+   - Open Inference Protocol (OIP v2) / NVIDIA Triton HTTP REST:
+     GET /v2, GET /v2/health/live, GET /v2/health/ready, GET /v2/models/{name}, GET /v2/models/{name}/ready,
+     GET /v2/models/{name}/config, GET /v2/models/stats, GET /v2/models/{name}/stats, POST /v2/repository/index,
+     POST /v2/repository/models/{name}/load, POST /v2/repository/models/{name}/unload, POST /v2/models/{name}/infer
+   - Inference Transports:
+     POST /v1/models/{id}/infer (REST), snoozeml.v1.InferenceService/Infer (gRPC),
+     snoozeml.v1.InferenceService/StreamInfer (bi-directional streaming), infer_dataset chunking.
+
+2. Model Architectures Trained Locally & Deployed:
+   - Pure-Rust Tree / GBDT (`provider: tree` / `hessboost`): trained with XGBoost on Iris (.xgb.json).
+   - Scikit-Learn Logistic Regression ONNX Pipeline (`provider: ort`): trained with scikit-learn (.onnx).
+   - Scikit-Learn Random Forest ONNX (`provider: ort`): trained with scikit-learn ensemble (.onnx).
+   - Candle Safetensors Sequential MLP (`provider: candle`): 2-layer ReLU MLP (.safetensors).
+   - Deterministic Mock Engine (`mock:cpu`): synthetic scale-to-zero and error testing.
+
+3. Authentication, Security & RBAC:
+   - Dual header authentication: `x-api-key: <key>` and `Authorization: Bearer <key>`.
+   - 3-tier Role-Based Access Control: Admin, Inference, ReadOnly permissions.
+   - Public endpoint reachability without credentials.
+   - Typed error mapping across REST and gRPC (401 Auth, 403 Forbidden, 404 NotFound, 400 InvalidInput).
+
+4. Async Client Parity:
+   - Full AsyncSnoozeClient test suite covering health, lifecycle, uploads, concurrent batching, and streaming.
 """
 
 from __future__ import annotations
@@ -39,7 +57,10 @@ if str(PYTHON_SDK) not in sys.path:
 
 import numpy as np
 import pytest
+import safetensors.numpy
+from skl2onnx import to_onnx
 from sklearn.datasets import load_iris
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -171,7 +192,7 @@ def container_client_daemon(
     infer_key = "infer-secret-key-12345"
     readonly_key = "read-secret-key-12345"
 
-    # 4. Write models.toml with 3-tier RBAC configuration
+    # 4. Write models.toml with 3-tier RBAC and multiple initial model configurations
     config_toml = models_dir / "models.toml"
     config_toml.write_text(
         f"""
@@ -212,6 +233,15 @@ max_batch_size = 16
 max_batch_delay_ms = 5
 idle_timeout_secs = 300
 description = "Scikit-Learn Logistic Regression ONNX Pipeline"
+
+[[models]]
+id = "mock_cpu"
+path = "mock:cpu"
+pinned = false
+max_batch_size = 16
+max_batch_delay_ms = 5
+idle_timeout_secs = 300
+description = "Deterministic Mock Engine"
 """.strip(),
         encoding="utf-8",
     )
@@ -366,6 +396,17 @@ def test_client_health_service_info_and_metrics(
         assert isinstance(daemon_metrics, DaemonMetrics)
         assert daemon_metrics.requests_total >= 0
 
+        # 5. OIP v2 / Triton Health Probes
+        v2_live = client._request_raw("GET", "/v2/health/live")
+        assert v2_live.status_code == 200
+
+        v2_ready = client._request_raw("GET", "/v2/health/ready")
+        assert v2_ready.status_code == 200
+
+        v2_meta = client._request_json("GET", "/v2")
+        assert v2_meta.get("name") == "snooze-ml"
+        assert "extensions" in v2_meta
+
 
 # ==============================================================================
 # 2. MODEL LIFECYCLE MANAGEMENT (LIST, GET, PIN, UNPIN, UNLOAD, LOAD, EVICT, STATS)
@@ -390,6 +431,7 @@ def test_client_model_lifecycle_scale_to_zero(
         catalog = {m.id: m for m in models_list}
         assert "xgb_iris" in catalog
         assert "sklearn_pipe" in catalog
+        assert "mock_cpu" in catalog
 
         # xgb_iris is pinned=true -> starts in READY state
         assert catalog["xgb_iris"].state == ModelState.READY
@@ -448,66 +490,331 @@ def test_client_model_lifecycle_scale_to_zero(
 
 
 # ==============================================================================
-# 3. INFERENCE ACCURACY & DUAL TRANSPORT PARITY (REST vs NATIVE gRPC)
+# 3. TRITON / OPEN INFERENCE PROTOCOL (OIP v2) REST ENDPOINTS
 # ==============================================================================
 
 
-def test_client_inference_rest_and_grpc_parity(
+def test_client_triton_oip_v2_endpoints(
     container_client_daemon: ContainerDaemonContext,
 ) -> None:
-    """Verifies numerical equivalence between REST and gRPC against XGBoost and ONNX ground truth."""
+    """Verifies all NVIDIA Triton / OIP v2 REST endpoints (metadata, ready, config, stats, index, infer)."""
     ctx = container_client_daemon
-    x = ctx.sample_x
+    with SnoozeClient(
+        http_endpoint=f"http://{ctx.http_url}",
+        grpc_endpoint=ctx.grpc_url,
+        api_key=ctx.admin_api_key,
+    ) as client:
+        # 1. GET /v2/models/{name} (model metadata)
+        meta = client._request_json("GET", "/v2/models/xgb_iris")
+        assert meta.get("name") == "xgb_iris"
+        assert "inputs" in meta
+        assert "outputs" in meta
+
+        # 2. GET /v2/models/{name}/ready
+        ready_resp = client._request_raw("GET", "/v2/models/xgb_iris/ready")
+        assert ready_resp.status_code == 200
+
+        # 3. GET /v2/models/{name}/config
+        config_data = client._request_json("GET", "/v2/models/xgb_iris/config")
+        assert config_data.get("name") == "xgb_iris"
+        assert "dynamic_batching" in config_data
+
+        # 4. POST /v2/repository/index
+        index_entries = client._request_json("POST", "/v2/repository/index")
+        assert isinstance(index_entries, list)
+        names = {item["name"] for item in index_entries}
+        assert "xgb_iris" in names
+
+        # 5. POST /v2/models/{name}/infer (OIP v2 inference)
+        x_flat = ctx.sample_x[:2].flatten().tolist()
+        v2_payload = {
+            "inputs": [
+                {
+                    "name": "input",
+                    "shape": [2, 4],
+                    "datatype": "FP32",
+                    "data": x_flat,
+                }
+            ]
+        }
+        infer_data = client._request_json("POST", "/v2/models/xgb_iris/infer", json_payload=v2_payload)
+        assert infer_data.get("model_name") == "xgb_iris"
+        outputs = infer_data.get("outputs", [])
+        assert len(outputs) > 0
+        assert outputs[0]["shape"] == [2, 3]
+
+        # 6. POST /v2/repository/models/{name}/unload & load
+        unload_resp = client._request_raw("POST", "/v2/repository/models/xgb_iris/unload")
+        assert unload_resp.status_code == 200
+
+        load_resp = client._request_raw("POST", "/v2/repository/models/xgb_iris/load")
+        assert load_resp.status_code == 200
+
+
+# ==============================================================================
+# 4. LOCAL TRAINING & DYNAMIC DEPLOYMENT: PURE-RUST TREE (XGBOOST GBDT)
+# ==============================================================================
+
+
+def test_training_and_deploy_pure_rust_tree_xgboost(
+    container_client_daemon: ContainerDaemonContext,
+) -> None:
+    """Trains a distinct XGBoost classifier locally, deploys it via deploy_xgboost, and tests REST/gRPC parity."""
+    ctx = container_client_daemon
+    iris = load_iris()
+    x_iris = iris.data.astype(np.float32)
+    y_iris = iris.target.astype(np.int32)
+    test_x = np.ascontiguousarray(x_iris[:4], dtype=np.float32)
+
+    # Train a new local model
+    custom_xgb = xgb.XGBClassifier(
+        n_estimators=6,
+        max_depth=2,
+        learning_rate=0.3,
+        objective="multi:softprob",
+        random_state=123,
+    )
+    custom_xgb.fit(x_iris, y_iris)
+    expected_prob = custom_xgb.predict_proba(test_x).astype(np.float32)
 
     with SnoozeClient(
         http_endpoint=f"http://{ctx.http_url}",
         grpc_endpoint=ctx.grpc_url,
-        api_key=ctx.infer_api_key,
+        api_key=ctx.admin_api_key,
     ) as client:
-        # --- A. Pure-Rust XGBoost Tree Model ---
-        # REST
-        resp_xgb_rest: InferenceResponse = client.infer(
-            "xgb_iris", {"input": x}, use_grpc=False
+        # Deploy using client.deploy_xgboost (converts and uploads in one step)
+        info = client.deploy_xgboost(
+            custom_xgb,
+            model_id="custom_xgb_dynamic",
+            description="Dynamically trained XGBoost tree model",
+            pinned=False,
+            max_batch_size=8,
         )
-        assert resp_xgb_rest.model_id == "xgb_iris"
-        assert resp_xgb_rest.duration_ms >= 0.0
-        prob_xgb_rest = resp_xgb_rest.get_numpy()
-        np.testing.assert_allclose(prob_xgb_rest, ctx.expected_xgb_prob, atol=1e-4)
+        assert info.id == "custom_xgb_dynamic"
 
-        # gRPC
-        resp_xgb_grpc: InferenceResponse = client.infer(
-            "xgb_iris", {"input": x}, use_grpc=True
-        )
-        assert resp_xgb_grpc.model_id == "xgb_iris"
-        prob_xgb_grpc = resp_xgb_grpc.get_numpy()
-        np.testing.assert_allclose(prob_xgb_grpc, ctx.expected_xgb_prob, atol=1e-4)
+        # REST Inference
+        resp_rest = client.infer("custom_xgb_dynamic", {"input": test_x}, use_grpc=False)
+        assert resp_rest.model_id == "custom_xgb_dynamic"
+        prob_rest = resp_rest.get_numpy()
+        np.testing.assert_allclose(prob_rest, expected_prob, atol=1e-4)
+
+        # gRPC Inference
+        resp_grpc = client.infer("custom_xgb_dynamic", {"input": test_x}, use_grpc=True)
+        assert resp_grpc.model_id == "custom_xgb_dynamic"
+        prob_grpc = resp_grpc.get_numpy()
+        np.testing.assert_allclose(prob_grpc, expected_prob, atol=1e-4)
 
         # Strict REST vs gRPC Equivalence
-        np.testing.assert_allclose(prob_xgb_rest, prob_xgb_grpc, atol=1e-5)
-
-        # --- B. Scikit-Learn ONNX Pipeline Model (Auto-loaded on demand) ---
-        # REST (tests scale-from-zero lazy load)
-        resp_onnx_rest: InferenceResponse = client.infer(
-            "sklearn_pipe", {"float_input": x}, use_grpc=False
-        )
-        assert resp_onnx_rest.model_id == "sklearn_pipe"
-        prob_onnx_rest = resp_onnx_rest.get_numpy()
-        np.testing.assert_allclose(prob_onnx_rest, ctx.expected_onnx_prob, atol=1e-4)
-
-        # gRPC
-        resp_onnx_grpc: InferenceResponse = client.infer(
-            "sklearn_pipe", {"float_input": x}, use_grpc=True
-        )
-        assert resp_onnx_grpc.model_id == "sklearn_pipe"
-        prob_onnx_grpc = resp_onnx_grpc.get_numpy()
-        np.testing.assert_allclose(prob_onnx_grpc, ctx.expected_onnx_prob, atol=1e-4)
-
-        # Strict REST vs gRPC Equivalence
-        np.testing.assert_allclose(prob_onnx_rest, prob_onnx_grpc, atol=1e-5)
+        np.testing.assert_allclose(prob_rest, prob_grpc, atol=1e-5)
 
 
 # ==============================================================================
-# 4. DATASET CHUNKING & BI-DIRECTIONAL gRPC STREAMING
+# 5. LOCAL TRAINING & DYNAMIC DEPLOYMENT: SCIKIT-LEARN ONNX PIPELINE
+# ==============================================================================
+
+
+def test_training_and_deploy_sklearn_logistic_regression_onnx(
+    container_client_daemon: ContainerDaemonContext,
+) -> None:
+    """Trains a Scikit-Learn Logistic Regression pipeline locally, deploys via deploy_sklearn, and tests REST/gRPC parity."""
+    ctx = container_client_daemon
+    iris = load_iris()
+    x_iris = iris.data.astype(np.float32)
+    y_iris = iris.target.astype(np.int32)
+    test_x = np.ascontiguousarray(x_iris[10:14], dtype=np.float32)
+
+    # Train a new local model
+    custom_pipe = make_pipeline(StandardScaler(), LogisticRegression(C=0.5, max_iter=200, random_state=888))
+    custom_pipe.fit(x_iris, y_iris)
+    expected_prob = custom_pipe.predict_proba(test_x).astype(np.float32)
+
+    with SnoozeClient(
+        http_endpoint=f"http://{ctx.http_url}",
+        grpc_endpoint=ctx.grpc_url,
+        api_key=ctx.admin_api_key,
+    ) as client:
+        # Deploy using client.deploy_sklearn
+        info = client.deploy_sklearn(
+            custom_pipe,
+            model_id="custom_sklearn_pipe",
+            input_name="float_input",
+            description="Dynamically trained Scikit-Learn ONNX Pipeline",
+            pinned=False,
+        )
+        assert info.id == "custom_sklearn_pipe"
+
+        # REST Inference
+        resp_rest = client.infer("custom_sklearn_pipe", {"float_input": test_x}, use_grpc=False)
+        assert resp_rest.model_id == "custom_sklearn_pipe"
+        prob_rest = resp_rest.get_numpy()
+        np.testing.assert_allclose(prob_rest, expected_prob, atol=1e-4)
+
+        # gRPC Inference
+        resp_grpc = client.infer("custom_sklearn_pipe", {"float_input": test_x}, use_grpc=True)
+        prob_grpc = resp_grpc.get_numpy()
+        np.testing.assert_allclose(prob_grpc, expected_prob, atol=1e-4)
+
+        # Parity
+        np.testing.assert_allclose(prob_rest, prob_grpc, atol=1e-5)
+
+
+# ==============================================================================
+# 6. LOCAL TRAINING & DYNAMIC DEPLOYMENT: SCIKIT-LEARN RANDOM FOREST (ONNX)
+# ==============================================================================
+
+
+def test_training_and_deploy_sklearn_random_forest_onnx(
+    container_client_daemon: ContainerDaemonContext,
+) -> None:
+    """Trains a Random Forest ensemble locally, exports to ONNX, uploads via upload_model, and verifies parity."""
+    ctx = container_client_daemon
+    iris = load_iris()
+    # Predict sepal length from remaining features (regression produces clean float32 tensor)
+    x_features = iris.data[:, 1:].astype(np.float32)
+    y_target = iris.data[:, 0].astype(np.float32)
+    test_x = np.ascontiguousarray(x_features[20:25], dtype=np.float32)
+
+    rf = RandomForestRegressor(n_estimators=4, max_depth=3, random_state=42)
+    rf.fit(x_features, y_target)
+    expected_pred = rf.predict(test_x).astype(np.float32)
+    if expected_pred.ndim == 1:
+        expected_pred = expected_pred[:, np.newaxis]
+
+    # Convert to ONNX with skl2onnx
+    onnx_proto = to_onnx(rf, test_x[:1])
+    onnx_bytes = onnx_proto.SerializeToString()
+
+    with SnoozeClient(
+        http_endpoint=f"http://{ctx.http_url}",
+        grpc_endpoint=ctx.grpc_url,
+        api_key=ctx.admin_api_key,
+    ) as client:
+        # Upload via SDK upload_model
+        info = client.upload_model(
+            file=onnx_bytes,
+            filename="dynamic_rf.onnx",
+            model_id="dynamic_rf",
+            description="Dynamically exported Random Forest Regressor ONNX",
+            pinned=False,
+        )
+        assert info.id == "dynamic_rf"
+
+        input_node_name = onnx_proto.graph.input[0].name
+
+        # REST Inference
+        resp_rest = client.infer("dynamic_rf", {input_node_name: test_x}, use_grpc=False)
+        pred_rest = resp_rest.get_numpy()
+        np.testing.assert_allclose(pred_rest, expected_pred, atol=1e-4)
+
+        # gRPC Inference
+        resp_grpc = client.infer("dynamic_rf", {input_node_name: test_x}, use_grpc=True)
+        pred_grpc = resp_grpc.get_numpy()
+        np.testing.assert_allclose(pred_grpc, expected_pred, atol=1e-4)
+
+        # Strict Parity
+        np.testing.assert_allclose(pred_rest, pred_grpc, atol=1e-5)
+
+
+# ==============================================================================
+# 7. LOCAL TRAINING & DYNAMIC DEPLOYMENT: CANDLE SAFETENSORS (SEQUENTIAL MLP)
+# ==============================================================================
+
+
+def test_training_and_deploy_candle_safetensors_mlp(
+    container_client_daemon: ContainerDaemonContext,
+) -> None:
+    """Builds a 2-layer sequential ReLU MLP in Safetensors, uploads via upload_model, and verifies against NumPy math."""
+    ctx = container_client_daemon
+    np.random.seed(999)
+
+    # Layer 1: 4 -> 8 Linear + ReLU
+    w1 = np.random.randn(8, 4).astype(np.float32) * 0.5
+    b1 = np.random.randn(8).astype(np.float32) * 0.1
+    # Layer 2: 8 -> 3 Linear
+    w2 = np.random.randn(3, 8).astype(np.float32) * 0.5
+    b2 = np.random.randn(3).astype(np.float32) * 0.1
+
+    tensors = {
+        "fc1.weight": w1,
+        "fc1.bias": b1,
+        "fc2.weight": w2,
+        "fc2.bias": b2,
+    }
+    safetensors_bytes = safetensors.numpy.save(tensors)
+
+    # Compute ground truth math: y = (relu(x @ W1.T + b1)) @ W2.T + b2
+    test_x = ctx.sample_x[:5]
+    h1 = np.maximum(0.0, test_x @ w1.T + b1)
+    expected_output = h1 @ w2.T + b2
+
+    with SnoozeClient(
+        http_endpoint=f"http://{ctx.http_url}",
+        grpc_endpoint=ctx.grpc_url,
+        api_key=ctx.admin_api_key,
+    ) as client:
+        # Upload Safetensors model
+        info = client.upload_model(
+            file=safetensors_bytes,
+            filename="candle_mlp.safetensors",
+            model_id="candle_mlp",
+            description="Pure Safetensors 2-layer MLP executed by Candle backend",
+            pinned=False,
+            provider="candle",
+        )
+        assert info.id == "candle_mlp"
+
+        # REST Inference
+        resp_rest = client.infer("candle_mlp", {"input": test_x}, use_grpc=False)
+        assert resp_rest.model_id == "candle_mlp"
+        actual_rest = resp_rest.get_numpy()
+        np.testing.assert_allclose(actual_rest, expected_output, atol=1e-4)
+
+        # gRPC Inference
+        resp_grpc = client.infer("candle_mlp", {"input": test_x}, use_grpc=True)
+        actual_grpc = resp_grpc.get_numpy()
+        np.testing.assert_allclose(actual_grpc, expected_output, atol=1e-4)
+
+        # Parity
+        np.testing.assert_allclose(actual_rest, actual_grpc, atol=1e-5)
+
+
+# ==============================================================================
+# 8. DETERMINISTIC MOCK ENGINE EXECUTION & SCALE-TO-ZERO
+# ==============================================================================
+
+
+def test_deterministic_mock_model_execution_and_reclamation(
+    container_client_daemon: ContainerDaemonContext,
+) -> None:
+    """Verifies that the built-in deterministic mock backend executes cleanly across REST and gRPC."""
+    ctx = container_client_daemon
+    test_x = ctx.sample_x[:3]
+
+    with SnoozeClient(
+        http_endpoint=f"http://{ctx.http_url}",
+        grpc_endpoint=ctx.grpc_url,
+        api_key=ctx.admin_api_key,
+    ) as client:
+        # REST Inference on mock_cpu
+        resp_rest = client.infer("mock_cpu", {"input": test_x}, use_grpc=False)
+        assert resp_rest.model_id == "mock_cpu"
+        out_rest = resp_rest.get_numpy()
+        assert out_rest.shape == test_x.shape
+
+        # gRPC Inference on mock_cpu
+        resp_grpc = client.infer("mock_cpu", {"input": test_x}, use_grpc=True)
+        assert resp_grpc.model_id == "mock_cpu"
+        out_grpc = resp_grpc.get_numpy()
+        np.testing.assert_allclose(out_rest, out_grpc, atol=1e-5)
+
+        # Unload mock_cpu to verify deallocation
+        unload_res = client.models.unload("mock_cpu")
+        assert unload_res["status"] == "unloaded"
+        assert client.models.get("mock_cpu").is_loaded is False
+
+
+# ==============================================================================
+# 9. DATASET CHUNKING & BI-DIRECTIONAL gRPC STREAMING
 # ==============================================================================
 
 
@@ -516,8 +823,7 @@ def test_client_infer_dataset_and_streaming(
 ) -> None:
     """Verifies client.infer_dataset chunk concatenation and client.stream_infer over persistent gRPC."""
     ctx = container_client_daemon
-    # Duplicate sample_x to create a multi-batch dataset (16 rows)
-    big_x = np.repeat(ctx.sample_x, 2, axis=0)
+    big_x = np.repeat(ctx.sample_x, 2, axis=0)  # 16 rows
     expected_big_prob = ctx.xgb_clf.predict_proba(big_x).astype(np.float32)
 
     with SnoozeClient(
@@ -559,7 +865,7 @@ def test_client_infer_dataset_and_streaming(
 
 
 # ==============================================================================
-# 5. ASYNC CLIENT: CONCURRENCY, DYNAMIC BATCHING & STREAMING
+# 10. ASYNC CLIENT: LIFECYCLE, CONCURRENCY, DYNAMIC BATCHING & STREAMING
 # ==============================================================================
 
 
@@ -646,71 +952,14 @@ async def test_async_client_lifecycle_and_concurrent_batching(
 
 
 # ==============================================================================
-# 6. DYNAMIC RUNTIME MODEL UPLOAD VIA SDK
-# ==============================================================================
-
-
-def test_client_dynamic_model_upload_and_infer(
-    container_client_daemon: ContainerDaemonContext,
-) -> None:
-    """Verifies that the Python SDK upload_model method uploads a model and immediately runs inference."""
-    ctx = container_client_daemon
-    iris = load_iris()
-    x_iris = iris.data.astype(np.float32)
-    y_iris = iris.target.astype(np.int32)
-    test_x = np.ascontiguousarray(x_iris[:3], dtype=np.float32)
-
-    # Train a new distinct model
-    new_clf = xgb.XGBClassifier(n_estimators=4, max_depth=2, random_state=777)
-    new_clf.fit(x_iris, y_iris)
-    expected_prob = new_clf.predict_proba(test_x).astype(np.float32)
-
-    temp_path = ctx.models_dir / "dynamic_sdk_tree.xgb.json"
-    export_xgboost(new_clf, output_path=temp_path)
-    file_bytes = temp_path.read_bytes()
-
-    with SnoozeClient(
-        http_endpoint=f"http://{ctx.http_url}",
-        grpc_endpoint=ctx.grpc_url,
-        api_key=ctx.admin_api_key,
-    ) as client:
-        # Upload via SDK upload_model (provider inferred automatically by backend from .xgb.json)
-        uploaded_info = client.upload_model(
-            file=file_bytes,
-            filename="dynamic_sdk_tree.xgb.json",
-            model_id="dynamic_sdk_tree",
-            description="Dynamically uploaded model via SnoozeClient",
-            pinned=False,
-        )
-        assert uploaded_info.id == "dynamic_sdk_tree"
-        assert uploaded_info.state in (ModelState.IDLE, ModelState.READY)
-
-        # Verify model appears in catalog
-        info = client.models.get("dynamic_sdk_tree")
-        assert info.id == "dynamic_sdk_tree"
-
-        # Execute inference on the newly uploaded model
-        infer_resp = client.infer("dynamic_sdk_tree", {"input": test_x})
-        assert infer_resp.model_id == "dynamic_sdk_tree"
-        actual_prob = infer_resp.get_numpy()
-        np.testing.assert_allclose(actual_prob, expected_prob, atol=1e-4)
-
-    # Clean up local artifact
-    try:
-        temp_path.unlink()
-    except Exception:
-        pass
-
-
-# ==============================================================================
-# 7. 3-TIER ROLE-BASED ACCESS CONTROL (RBAC) ENFORCEMENT ACROSS TRANSPORTS
+# 11. 3-TIER ROLE-BASED ACCESS CONTROL (RBAC) & DUAL HEADER AUTHENTICATION
 # ==============================================================================
 
 
 def test_client_rbac_permissions_and_unauthorized_access(
     container_client_daemon: ContainerDaemonContext,
 ) -> None:
-    """Verifies that Admin, Inference, and ReadOnly API keys enforce RBAC rules across REST and gRPC."""
+    """Verifies that Admin, Inference, and ReadOnly credentials enforce RBAC rules across REST and gRPC."""
     ctx = container_client_daemon
     x = ctx.sample_x[:2]
 
@@ -720,7 +969,13 @@ def test_client_rbac_permissions_and_unauthorized_access(
         grpc_endpoint=ctx.grpc_url,
         api_key=None,
     ) as anon_client:
-        # Protected REST infer -> 401
+        # Public health is allowed without credentials
+        assert anon_client.health_live() is True
+        assert anon_client.health_ready() is True
+        assert anon_client.service_info().get("status") == "ok"
+        assert anon_client.grpc_health("") is True
+
+        # Protected REST infer -> 401 AuthenticationError
         with pytest.raises(AuthenticationError):
             anon_client.infer("xgb_iris", {"input": x}, use_grpc=False)
 
@@ -732,7 +987,16 @@ def test_client_rbac_permissions_and_unauthorized_access(
         with pytest.raises(AuthenticationError):
             anon_client.models.list()
 
-    # 2. ReadOnly client can inspect catalog, but cannot infer or execute admin commands
+    # 2. Header parity: verify Bearer token syntax vs X-API-Key syntax
+    with SnoozeClient(
+        http_endpoint=f"http://{ctx.http_url}",
+        grpc_endpoint=ctx.grpc_url,
+        token=ctx.infer_api_key,  # Passed as Authorization: Bearer <token>
+    ) as bearer_client:
+        res = bearer_client.infer("xgb_iris", {"input": x}, use_grpc=False)
+        assert res.model_id == "xgb_iris"
+
+    # 3. ReadOnly client can inspect catalog and stats, but cannot infer or execute admin commands
     with SnoozeClient(
         http_endpoint=f"http://{ctx.http_url}",
         grpc_endpoint=ctx.grpc_url,
@@ -741,6 +1005,10 @@ def test_client_rbac_permissions_and_unauthorized_access(
         # Allowed: list models
         models = read_client.models.list()
         assert len(models) >= 2
+
+        # Allowed: get stats
+        stats = read_client.models.stats()
+        assert isinstance(stats, list)
 
         # Forbidden: infer on model -> 403 PermissionDeniedError
         with pytest.raises(PermissionDeniedError):
@@ -754,7 +1022,11 @@ def test_client_rbac_permissions_and_unauthorized_access(
         with pytest.raises(PermissionDeniedError):
             read_client.models.pin("xgb_iris")
 
-    # 3. Inference client can run infer, but cannot execute admin operations (pin, unload)
+        # Forbidden: unload model -> 403 PermissionDeniedError
+        with pytest.raises(PermissionDeniedError):
+            read_client.models.unload("xgb_iris")
+
+    # 4. Inference client can run infer, but cannot execute admin operations (pin, unload, upload)
     with SnoozeClient(
         http_endpoint=f"http://{ctx.http_url}",
         grpc_endpoint=ctx.grpc_url,
@@ -775,9 +1047,13 @@ def test_client_rbac_permissions_and_unauthorized_access(
         with pytest.raises(PermissionDeniedError):
             infer_client.models.pin("xgb_iris")
 
+        # Forbidden: refresh models -> 403 PermissionDeniedError
+        with pytest.raises(PermissionDeniedError):
+            infer_client.models.refresh()
+
 
 # ==============================================================================
-# 8. DEFENSIVE ERROR HANDLING PARITY & TYPED EXCEPTIONS
+# 12. DEFENSIVE ERROR HANDLING PARITY & TYPED EXCEPTIONS
 # ==============================================================================
 
 
