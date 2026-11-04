@@ -84,6 +84,10 @@ async fn test_e2e_health_and_models_endpoints() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    let live_body = response.into_body().collect().await.unwrap().to_bytes();
+    let live_json: serde_json::Value = serde_json::from_slice(&live_body).unwrap();
+    assert_eq!(live_json["status"], "live");
+    assert_eq!(live_json["version"], env!("CARGO_PKG_VERSION"));
 
     // 2. Check /v1/models
     let response = app
@@ -189,6 +193,7 @@ async fn test_e2e_readiness_endpoint() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "ready");
+    assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
 }
 
 #[tokio::test]

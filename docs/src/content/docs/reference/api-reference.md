@@ -67,7 +67,8 @@ Evaluates process health. Always returns `200 OK` as long as the HTTP listener i
 #### Response (`200 OK`)
 ```json
 {
-  "status": "live"
+  "status": "live",
+  "version": "0.1.2"
 }
 ```
 
@@ -82,7 +83,8 @@ Evaluates server readiness to accept network traffic.
 #### Response (`200 OK`)
 ```json
 {
-  "status": "ready"
+  "status": "ready",
+  "version": "0.1.2"
 }
 ```
 

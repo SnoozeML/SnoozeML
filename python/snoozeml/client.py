@@ -21,6 +21,7 @@ from typing import (
     Union,
 )
 import urllib.parse
+import warnings
 
 try:
     import grpc
@@ -66,6 +67,84 @@ logger = get_logger("client")
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_GRPC_PORT = 50051
 DEFAULT_MAX_MESSAGE_LENGTH = 64 * 1024 * 1024  # 64 MB
+
+MIN_SUPPORTED_SERVER_VERSION: Tuple[int, int, int] = (0, 1, 2)
+MAX_SUPPORTED_SERVER_VERSION: Tuple[int, int] = (0, 1)
+
+
+def _parse_semver(version_str: str) -> Optional[Tuple[int, int, int]]:
+    """Parses a semantic version string (e.g. ``'0.1.2'``) into ``(major, minor, patch)``."""
+    cleaned = str(version_str).strip().lstrip("vV")
+    if not cleaned:
+        return None
+    core = cleaned.split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        major = int(parts[0])
+        minor = int(parts[1])
+        patch = int(parts[2]) if len(parts) >= 3 else 0
+        if major < 0 or minor < 0 or patch < 0:
+            return None
+        return (major, minor, patch)
+    except ValueError:
+        return None
+
+
+def _validate_server_version(
+    version_str: str,
+    *,
+    min_version: Tuple[int, int, int] = MIN_SUPPORTED_SERVER_VERSION,
+    max_version: Tuple[int, int] = MAX_SUPPORTED_SERVER_VERSION,
+) -> bool:
+    """Validates a server version string against the supported range and emits a warning if out of bounds.
+
+    Returns:
+        ``True`` if the version is within the supported range, ``False`` otherwise.
+    """
+    parsed = _parse_semver(version_str)
+    if parsed is None:
+        return False
+
+    min_str = ".".join(str(x) for x in min_version)
+    max_str = f"{max_version[0]}.{max_version[1]}.x"
+
+    if (parsed[0], parsed[1]) > max_version:
+        msg = (
+            f"SnoozeML server version '{version_str}' is higher than the maximum supported "
+            f"version '{max_str}' (supported range: {min_str} - {max_str}). "
+            f"Please upgrade the 'snoozeml' Python client for full compatibility."
+        )
+        logger.warning(
+            "Unsupported newer SnoozeML server version detected",
+            extra={
+                "server_version": version_str,
+                "min_supported_version": min_str,
+                "max_supported_version": max_str,
+            },
+        )
+        warnings.warn(msg, UserWarning, stacklevel=3)
+        return False
+
+    if parsed < min_version:
+        msg = (
+            f"SnoozeML server version '{version_str}' is older than the minimum supported "
+            f"version '{min_str}' (supported range: {min_str} - {max_str}). "
+            f"Some features (such as streaming inference) may not be supported by this server."
+        )
+        logger.warning(
+            "Unsupported older SnoozeML server version detected",
+            extra={
+                "server_version": version_str,
+                "min_supported_version": min_str,
+                "max_supported_version": max_str,
+            },
+        )
+        warnings.warn(msg, UserWarning, stacklevel=3)
+        return False
+
+    return True
 
 
 def _normalize_localhost_url(url: str) -> str:
@@ -199,6 +278,7 @@ class SnoozeClient:
         max_message_length: int = DEFAULT_MAX_MESSAGE_LENGTH,
         max_retries: int = 0,
         retry_backoff: float = 0.5,
+        check_version: bool = True,
     ) -> None:
         self.http_endpoint, self.grpc_endpoint, self.use_grpc = _resolve_endpoints(
             endpoint=endpoint,
@@ -217,6 +297,9 @@ class SnoozeClient:
         self.max_message_length = int(max_message_length)
         self.max_retries = max(0, int(max_retries))
         self.retry_backoff = max(0.01, float(retry_backoff))
+        self.check_version = bool(check_version)
+        self._version_checked: bool = not self.check_version
+        self._server_version: Optional[str] = None
 
         self._session = requests.Session()
         if isinstance(tls_ca_cert, (str, Path)) and "-----BEGIN CERTIFICATE-----" not in str(tls_ca_cert):
@@ -290,12 +373,70 @@ class SnoozeClient:
             metadata.append(("x-api-key", self._api_key))
         return metadata
 
+    @property
+    def server_version(self) -> Optional[str]:
+        """Returns the detected SnoozeML server version after the first connection, or ``None``."""
+        return self._server_version
+
+    def _fetch_version_from_path(
+        self,
+        path: str,
+        timeout: Optional[float] = None,
+    ) -> Tuple[Optional[str], bool]:
+        """Fetches the ``version`` field from an HTTP endpoint without raising on network errors.
+
+        Returns:
+            Tuple of ``(version_str, http_reachable)``.
+        """
+        url = f"{self.http_endpoint}{path}"
+        req_timeout = timeout if timeout is not None else min(self.timeout, 5.0)
+        headers = self._http_headers(json_body=False)
+        try:
+            resp = self._session.request(
+                method="GET",
+                url=url,
+                headers=headers,
+                timeout=req_timeout,
+            )
+        except requests.exceptions.RequestException:
+            return None, False
+
+        if resp.status_code < 400:
+            try:
+                data = resp.json()
+                if (
+                    isinstance(data, Mapping)
+                    and isinstance(data.get("version"), str)
+                    and data["version"].strip()
+                ):
+                    return data["version"].strip(), True
+            except ValueError:
+                pass
+        return None, True
+
+    def _ensure_version_checked(self, timeout: Optional[float] = None) -> Optional[str]:
+        """Checks the SnoozeML server version on first connection via ``/health/ready`` (falling back to ``/``)."""
+        if self._version_checked:
+            return self._server_version
+        self._version_checked = True
+        probe_timeout = min(timeout if timeout is not None else self.timeout, 5.0)
+        version_str, reachable = self._fetch_version_from_path(
+            "/health/ready", timeout=probe_timeout
+        )
+        if version_str is None and reachable:
+            version_str, _ = self._fetch_version_from_path("/", timeout=probe_timeout)
+        if version_str is not None:
+            self._server_version = version_str
+            _validate_server_version(version_str)
+        return self._server_version
+
     def _ensure_grpc_stubs(self) -> Tuple[Any, Any]:
         """Lazily initializes the gRPC channel and service stubs."""
         if not _HAS_GRPC or grpc is None or InferenceServiceStub is None or health_pb2_grpc is None:
             raise SnoozeError(
                 "gRPC support requires 'grpcio' and 'protobuf'. Install with: pip install 'snoozeml[grpc]'"
             )
+        self._ensure_version_checked()
         if self._channel is None or self._infer_stub is None or self._health_stub is None:
             options = [
                 ("grpc.max_receive_message_length", self.max_message_length),
@@ -334,6 +475,9 @@ class SnoozeClient:
         """Executes an HTTP request against the SnoozeML REST endpoint and maps errors."""
         url = f"{self.http_endpoint}{path}"
         req_timeout = timeout if timeout is not None else self.timeout
+        if not self._version_checked and path not in ("/health/ready", "/health/live", "/"):
+            self._ensure_version_checked(timeout=req_timeout)
+
         headers = self._http_headers(json_body=json_payload is not None)
         body_bytes = (
             json.dumps(json_payload, allow_nan=False).encode("utf-8")
@@ -399,6 +543,27 @@ class SnoozeClient:
             )
             raise mapped_err
 
+        if not self._version_checked:
+            self._version_checked = True
+            version_str: Optional[str] = None
+            try:
+                data = resp.json()
+                if (
+                    isinstance(data, Mapping)
+                    and isinstance(data.get("version"), str)
+                    and data["version"].strip()
+                ):
+                    version_str = data["version"].strip()
+            except ValueError:
+                pass
+            if version_str is None and path != "/":
+                version_str, _ = self._fetch_version_from_path(
+                    "/", timeout=min(req_timeout, 5.0)
+                )
+            if version_str is not None:
+                self._server_version = version_str
+                _validate_server_version(version_str)
+
         return resp
 
     def _request_multipart(
@@ -413,6 +578,8 @@ class SnoozeClient:
         """Executes a multipart/form-data POST request against the SnoozeML REST endpoint."""
         url = f"{self.http_endpoint}{path}"
         req_timeout = timeout if timeout is not None else self.timeout
+        if not self._version_checked:
+            self._ensure_version_checked(timeout=req_timeout)
         # Omit application/json so requests calculates multipart boundary header automatically
         headers = self._http_headers(json_body=False)
 
@@ -1096,6 +1263,7 @@ class AsyncSnoozeClient:
         max_message_length: int = DEFAULT_MAX_MESSAGE_LENGTH,
         max_retries: int = 0,
         retry_backoff: float = 0.5,
+        check_version: bool = True,
     ) -> None:
         self._sync_client = SnoozeClient(
             endpoint=endpoint,
@@ -1110,6 +1278,7 @@ class AsyncSnoozeClient:
             max_message_length=max_message_length,
             max_retries=max_retries,
             retry_backoff=retry_backoff,
+            check_version=check_version,
         )
         self.http_endpoint = self._sync_client.http_endpoint
         self.grpc_endpoint = self._sync_client.grpc_endpoint
@@ -1120,6 +1289,7 @@ class AsyncSnoozeClient:
         self.max_message_length = self._sync_client.max_message_length
         self.max_retries = self._sync_client.max_retries
         self.retry_backoff = self._sync_client.retry_backoff
+        self.check_version = self._sync_client.check_version
 
         self._aio_channel: Optional[grpc.aio.Channel] = None
         self._aio_infer_stub: Optional[InferenceServiceStub] = None
@@ -1153,6 +1323,17 @@ class AsyncSnoozeClient:
             self._aio_channel = None
             self._aio_infer_stub = None
             self._aio_health_stub = None
+
+    @property
+    def server_version(self) -> Optional[str]:
+        """Returns the detected SnoozeML server version after the first connection, or ``None``."""
+        return self._sync_client.server_version
+
+    async def _ensure_version_checked(self, timeout: Optional[float] = None) -> Optional[str]:
+        """Asynchronously checks the SnoozeML server version on first connection."""
+        if self._sync_client._version_checked:
+            return self._sync_client.server_version
+        return await asyncio.to_thread(self._sync_client._ensure_version_checked, timeout)
 
     def _ensure_aio_grpc_stubs(self) -> Tuple[Any, Any]:
         """Lazily initializes the ``grpc.aio`` asynchronous channel and stubs."""
@@ -1233,6 +1414,7 @@ class AsyncSnoozeClient:
         while True:
             try:
                 if dispatch_grpc:
+                    await self._ensure_version_checked(timeout=timeout)
                     infer_stub, _ = self._ensure_aio_grpc_stubs()
                     req = build_grpc_infer_request(
                         model_id=model_id,
@@ -1354,6 +1536,7 @@ class AsyncSnoozeClient:
             raise InvalidInputError("model_id cannot be empty")
         model_id = str(model_id).strip()
 
+        await self._ensure_version_checked(timeout=timeout)
         infer_stub, _ = self._ensure_aio_grpc_stubs()
         req_timeout = timeout if timeout is not None else self.timeout
         metadata = self._sync_client._grpc_metadata()
@@ -1475,6 +1658,7 @@ class AsyncSnoozeClient:
 
     async def grpc_health(self, service: str = "") -> bool:
         """Asynchronously checks the gRPC health check service."""
+        await self._ensure_version_checked()
         _, health_stub = self._ensure_aio_grpc_stubs()
         req = health_pb2.HealthCheckRequest(service=service)
         try:

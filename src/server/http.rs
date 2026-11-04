@@ -715,12 +715,18 @@ async fn home_handler() -> Json<serde_json::Value> {
 
 /// Server liveness health probe (`GET /health/live`).
 async fn liveness_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "live" }))
+    Json(serde_json::json!({
+        "status": "live",
+        "version": env!("CARGO_PKG_VERSION")
+    }))
 }
 
 /// Server readiness probe (`GET /health/ready`).
 async fn readiness_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ready" }))
+    Json(serde_json::json!({
+        "status": "ready",
+        "version": env!("CARGO_PKG_VERSION")
+    }))
 }
 
 /// Prometheus metrics exposition endpoint (`GET /metrics`).

@@ -69,7 +69,12 @@ from .streams import (
     StreamWireFormat,
 )
 from .worker import RawTensor, SnoozeModel, WorkerError
-from .client import AsyncSnoozeClient, SnoozeClient
+from .client import (
+    MAX_SUPPORTED_SERVER_VERSION,
+    MIN_SUPPORTED_SERVER_VERSION,
+    AsyncSnoozeClient,
+    SnoozeClient,
+)
 
 # Alias for convenience and compatibility with design documentation
 Client = SnoozeClient
@@ -84,6 +89,8 @@ __version__ = "0.1.2"
 
 __all__ = [
     "__version__",
+    "MIN_SUPPORTED_SERVER_VERSION",
+    "MAX_SUPPORTED_SERVER_VERSION",
     "SnoozeClient",
     "AsyncSnoozeClient",
     "Client",

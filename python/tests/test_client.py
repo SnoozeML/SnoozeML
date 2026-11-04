@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
 import socket
+import threading
+from typing import Any, Dict, List
+import warnings
 
 import numpy as np
 import pytest
 
 from snoozeml import (
+    MAX_SUPPORTED_SERVER_VERSION,
+    MIN_SUPPORTED_SERVER_VERSION,
     AsyncClient,
     AsyncSnoozeClient,
     Client,
@@ -167,3 +174,141 @@ def test_model_stats_client_methods(monkeypatch: pytest.MonkeyPatch) -> None:
             assert all_stats_async[0].name == "bert"
 
     asyncio.run(_async_stats_check())
+
+
+class _VersionTestHandler(BaseHTTPRequestHandler):
+    """Ephemeral HTTP handler for testing server version compatibility checks."""
+
+    state: Dict[str, Any] = {}
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+    def _send_json(self, status: int, payload: Any) -> None:
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self) -> None:
+        calls: List[str] = self.state.setdefault("calls", [])
+        calls.append(self.path)
+
+        if self.path == "/health/ready":
+            if self.state.get("omit_health_version", False):
+                self._send_json(200, {"status": "ready"})
+            else:
+                self._send_json(
+                    200,
+                    {"status": "ready", "version": self.state.get("version", "0.1.2")},
+                )
+            return
+
+        if self.path == "/health/live":
+            self._send_json(
+                200,
+                {"status": "live", "version": self.state.get("version", "0.1.2")},
+            )
+            return
+
+        if self.path == "/":
+            self._send_json(
+                200,
+                {
+                    "service": "snooze-ml",
+                    "status": "ok",
+                    "version": self.state.get("version", "0.1.2"),
+                },
+            )
+            return
+
+        if self.path == "/v1/models":
+            self._send_json(200, [])
+            return
+
+        self._send_json(404, {"error": "not found"})
+
+
+def test_server_version_check_on_first_connection() -> None:
+    assert MIN_SUPPORTED_SERVER_VERSION == (0, 1, 2)
+    assert MAX_SUPPORTED_SERVER_VERSION == (0, 1)
+
+    _VersionTestHandler.state = {"version": "0.1.2", "calls": []}
+    server = HTTPServer(("127.0.0.1", 0), _VersionTestHandler)
+    port = server.server_port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        url = f"http://127.0.0.1:{port}"
+
+        # 1. Supported version (0.1.2) -> no warning, checked only once across multiple requests
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with SnoozeClient(url) as client:
+                assert client.server_version is None
+                assert client.models.list() == []
+                assert client.server_version == "0.1.2"
+                assert client.models.list() == []
+            assert len(caught) == 0
+            assert _VersionTestHandler.state["calls"].count("/health/ready") == 1
+
+        # 2. Newer unsupported major/minor version (0.2.0) -> emits UserWarning once on first connection
+        _VersionTestHandler.state = {"version": "0.2.0", "calls": []}
+        with pytest.warns(UserWarning, match="higher than the maximum supported version"):
+            with SnoozeClient(url) as client:
+                assert client.models.list() == []
+                assert client.server_version == "0.2.0"
+                # Subsequent calls must not re-check or re-warn
+                with warnings.catch_warnings(record=True) as second_caught:
+                    warnings.simplefilter("always")
+                    assert client.models.list() == []
+                    assert len(second_caught) == 0
+        assert _VersionTestHandler.state["calls"].count("/health/ready") == 1
+
+        # 3. Older unsupported version (0.1.1) -> emits UserWarning once on first connection
+        _VersionTestHandler.state = {"version": "0.1.1", "calls": []}
+        with pytest.warns(UserWarning, match="older than the minimum supported version"):
+            with SnoozeClient(url) as client:
+                assert client.health_ready() is True
+                assert client.server_version == "0.1.1"
+        assert _VersionTestHandler.state["calls"] == ["/health/ready"]
+
+        # 4. Fallback to GET / when /health/ready omits "version" (legacy server)
+        _VersionTestHandler.state = {
+            "version": "0.3.0",
+            "omit_health_version": True,
+            "calls": [],
+        }
+        with pytest.warns(UserWarning, match="higher than the maximum supported version"):
+            with SnoozeClient(url) as client:
+                assert client.models.list() == []
+                assert client.server_version == "0.3.0"
+        assert "/health/ready" in _VersionTestHandler.state["calls"]
+        assert "/" in _VersionTestHandler.state["calls"]
+
+        # 5. check_version=False skips version check completely
+        _VersionTestHandler.state = {"version": "2.0.0", "calls": []}
+        with warnings.catch_warnings(record=True) as caught_disabled:
+            warnings.simplefilter("always")
+            with SnoozeClient(url, check_version=False) as client:
+                assert client.models.list() == []
+                assert client.server_version is None
+            assert len(caught_disabled) == 0
+            assert "/health/ready" not in _VersionTestHandler.state["calls"]
+
+        # 6. AsyncSnoozeClient emits warning on first connection
+        _VersionTestHandler.state = {"version": "0.2.1", "calls": []}
+
+        async def _async_version_check() -> None:
+            with pytest.warns(UserWarning, match="higher than the maximum supported version"):
+                async with AsyncSnoozeClient(url) as aclient:
+                    assert await aclient.models.list() == []
+                    assert aclient.server_version == "0.2.1"
+
+        asyncio.run(_async_version_check())
+    finally:
+        server.shutdown()
+        server.server_close()
