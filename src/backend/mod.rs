@@ -61,6 +61,28 @@ fn is_tree_model(model_path: &str, provider: Option<&str>) -> bool {
     false
 }
 
+/// Classifies a CUDA or TensorRT runtime error string into an actionable diagnostic reason.
+///
+/// Distinguishes missing host NVIDIA driver libraries (`libcuda.so.1` / `nvcuda.dll`) from
+/// driver initialization or device ordinal lookup failures.
+#[must_use]
+pub fn classify_cuda_failure_reason(err_str: &str) -> &'static str {
+    let lower = err_str.to_lowercase();
+    if lower.contains("libcuda.so")
+        || lower.contains("nvcuda")
+        || lower.contains("stub_library")
+        || lower.contains("stub library")
+        || lower.contains("cannot open shared object")
+        || lower.contains("unable to dynamically load")
+        || lower.contains("dlopen")
+        || lower.contains("shared library")
+    {
+        "NVIDIA driver library (libcuda.so.1) not found on host."
+    } else {
+        "NVIDIA driver could not be initialized or no compatible GPU device was detected."
+    }
+}
+
 /// Trait defining the interface for an underlying model execution engine.
 ///
 /// Designed to support multiple runtime providers such as ONNX Runtime (`ort`),

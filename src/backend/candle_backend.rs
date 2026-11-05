@@ -134,92 +134,7 @@ impl CandleBackend {
             )));
         }
 
-        let (device, device_label) = match config.device {
-            CandleDevice::Auto => {
-                // 1. Try GPU (CUDA) when compiled with candle-cuda support
-                #[cfg(feature = "candle-cuda")]
-                let gpu_dev = match Device::new_cuda(0) {
-                    Ok(dev) => {
-                        tracing::info!(model = %config.model_path, "Auto device: initialized Candle with CUDA GPU");
-                        Some((dev, "candle-cuda"))
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            model = %config.model_path,
-                            error = %e,
-                            "Auto device: CUDA GPU unavailable for Candle (requires NVIDIA driver + CUDA 13 runtime on host, or use ghcr.io/snoozeml/snoozeml:cuda); falling back to CPU"
-                        );
-                        None
-                    }
-                };
-                #[cfg(not(feature = "candle-cuda"))]
-                let gpu_dev: Option<(Device, &'static str)> = None;
-
-                if let Some(res) = gpu_dev {
-                    res
-                } else {
-                    // 2. Try MLX / Metal on macOS when compiled with metal support
-                    #[cfg(all(target_os = "macos", feature = "metal"))]
-                    let mlx_dev = match Device::new_metal(0) {
-                        Ok(dev) => {
-                            tracing::info!(model = %config.model_path, "Auto device: initialized Candle with Apple Silicon MLX/Metal");
-                            Some((dev, "candle-mlx"))
-                        }
-                        Err(e) => {
-                            tracing::info!(model = %config.model_path, error = %e, "Metal/MLX unavailable for Candle; falling back to CPU");
-                            None
-                        }
-                    };
-                    #[cfg(not(all(target_os = "macos", feature = "metal")))]
-                    let mlx_dev: Option<(Device, &'static str)> = None;
-
-                    if let Some(res) = mlx_dev {
-                        res
-                    } else {
-                        // 3. Fallback to CPU
-                        tracing::info!(model = %config.model_path, "Auto device: defaulting Candle to host CPU");
-                        (Device::Cpu, "candle-cpu")
-                    }
-                }
-            }
-            CandleDevice::Cpu => (Device::Cpu, "candle-cpu"),
-            CandleDevice::Mlx => {
-                #[cfg(all(target_os = "macos", feature = "metal"))]
-                {
-                    let dev = Device::new_metal(0).map_err(|e| {
-                        InferenceError::Runtime(format!(
-                            "Failed to initialize Metal/MLX device for Candle model '{}': {e}",
-                            config.model_path
-                        ))
-                    })?;
-                    (dev, "candle-mlx")
-                }
-                #[cfg(not(all(target_os = "macos", feature = "metal")))]
-                {
-                    return Err(InferenceError::Runtime(format!(
-                        "Metal/MLX device requested for Candle model '{}', but snooze was not compiled on macOS with the 'metal' feature",
-                        config.model_path
-                    )));
-                }
-            }
-            #[cfg(feature = "candle-cuda")]
-            CandleDevice::Cuda(idx) => {
-                let dev = Device::new_cuda(idx).map_err(|e| {
-                    InferenceError::Runtime(format!(
-                        "Failed to initialize CUDA device {idx} for Candle model '{}': {e}. Ensure an NVIDIA GPU driver and CUDA 13 runtime libraries are installed on your host, or run the preconfigured 'ghcr.io/snoozeml/snoozeml:cuda' container",
-                        config.model_path
-                    ))
-                })?;
-                (dev, "candle-cuda")
-            }
-            #[cfg(not(feature = "candle-cuda"))]
-            CandleDevice::Cuda(_) => {
-                return Err(InferenceError::Runtime(format!(
-                    "CUDA device requested for Candle model '{}', but snooze was compiled without the 'candle-cuda' feature (requires NVIDIA CUDA Toolkit / nvcc at build time, or export the model to ONNX to use the prebuilt ONNX Runtime CUDA provider)",
-                    config.model_path
-                )));
-            }
-        };
+        let (device, device_label) = Self::select_device(config)?;
 
         // Inspect for companion configuration: {model_stem}.json or config.json
         let (companion_config, hf_arch) = Self::load_companion_config(model_file);
@@ -399,6 +314,114 @@ impl CandleBackend {
             output_name,
             device_label,
         })
+    }
+
+    /// Resolves and initializes the target Candle compute device, classifying CUDA driver/hardware
+    /// failures into structured warnings (when `CandleDevice::Auto`) or strict errors (when `CandleDevice::Cuda`).
+    fn select_device(config: &CandleConfig) -> Result<(Device, &'static str), InferenceError> {
+        match config.device {
+            CandleDevice::Auto => {
+                // 1. Try GPU (CUDA) when compiled with candle-cuda support
+                #[cfg(feature = "candle-cuda")]
+                let gpu_dev = match Device::new_cuda(0) {
+                    Ok(dev) => {
+                        tracing::info!(model = %config.model_path, "Auto device: initialized Candle with CUDA GPU");
+                        Some((dev, "candle-cuda"))
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        let reason = crate::backend::classify_cuda_failure_reason(&err_str);
+                        tracing::warn!(
+                            model = %config.model_path,
+                            reason = %reason,
+                            error = %err_str,
+                            "Auto device: {reason} Continuing on the CPU backend"
+                        );
+                        None
+                    }
+                };
+                #[cfg(not(feature = "candle-cuda"))]
+                let gpu_dev: Option<(Device, &'static str)> = None;
+
+                if let Some(res) = gpu_dev {
+                    Ok(res)
+                } else {
+                    // 2. Try MLX / Metal on macOS when compiled with metal support
+                    #[cfg(all(target_os = "macos", feature = "metal"))]
+                    let mlx_dev = match Device::new_metal(0) {
+                        Ok(dev) => {
+                            tracing::info!(model = %config.model_path, "Auto device: initialized Candle with Apple Silicon MLX/Metal");
+                            Some((dev, "candle-mlx"))
+                        }
+                        Err(e) => {
+                            tracing::info!(model = %config.model_path, error = %e, "Metal/MLX unavailable for Candle; falling back to CPU");
+                            None
+                        }
+                    };
+                    #[cfg(not(all(target_os = "macos", feature = "metal")))]
+                    let mlx_dev: Option<(Device, &'static str)> = None;
+
+                    if let Some(res) = mlx_dev {
+                        Ok(res)
+                    } else {
+                        // 3. Fallback to CPU
+                        tracing::info!(model = %config.model_path, "Auto device: defaulting Candle to host CPU");
+                        Ok((Device::Cpu, "candle-cpu"))
+                    }
+                }
+            }
+            CandleDevice::Cpu => Ok((Device::Cpu, "candle-cpu")),
+            CandleDevice::Mlx => {
+                #[cfg(all(target_os = "macos", feature = "metal"))]
+                {
+                    let dev = Device::new_metal(0).map_err(|e| {
+                        InferenceError::Runtime(format!(
+                            "Failed to initialize Metal/MLX device for Candle model '{}': {e}",
+                            config.model_path
+                        ))
+                    })?;
+                    Ok((dev, "candle-mlx"))
+                }
+                #[cfg(not(all(target_os = "macos", feature = "metal")))]
+                {
+                    Err(InferenceError::Runtime(format!(
+                        "Metal/MLX device requested for Candle model '{}', but snooze was not compiled on macOS with the 'metal' feature",
+                        config.model_path
+                    )))
+                }
+            }
+            #[cfg(feature = "candle-cuda")]
+            CandleDevice::Cuda(idx) => {
+                let dev = Device::new_cuda(idx).map_err(|e| {
+                    let err_str = e.to_string();
+                    let reason = crate::backend::classify_cuda_failure_reason(&err_str);
+                    tracing::error!(
+                        model = %config.model_path,
+                        device_ordinal = idx,
+                        reason = %reason,
+                        error = %err_str,
+                        "Strict CUDA device initialization failed: {reason} Remediation: Install a compatible NVIDIA driver, pass --gpus all to Docker, or set device = \"cpu\" / device = \"auto\" in your config"
+                    );
+                    InferenceError::Runtime(format!(
+                        "Failed to initialize CUDA device {idx} for Candle model '{}': {reason} ({err_str}). Install a compatible NVIDIA driver, pass --gpus all to Docker, or set device = \"cpu\" / device = \"auto\" in your config",
+                        config.model_path
+                    ))
+                })?;
+                Ok((dev, "candle-cuda"))
+            }
+            #[cfg(not(feature = "candle-cuda"))]
+            CandleDevice::Cuda(idx) => {
+                tracing::error!(
+                    model = %config.model_path,
+                    device_ordinal = idx,
+                    "Strict CUDA device requested, but snooze was compiled without the 'candle-cuda' feature. Remediation: Install a compatible NVIDIA driver, pass --gpus all to Docker, or set device = \"cpu\" / device = \"auto\" in your config"
+                );
+                Err(InferenceError::Runtime(format!(
+                    "CUDA device requested for Candle model '{}', but snooze was compiled without the 'candle-cuda' feature (requires NVIDIA CUDA Toolkit / nvcc at build time, or export the model to ONNX to use the prebuilt ONNX Runtime CUDA provider)",
+                    config.model_path
+                )))
+            }
+        }
     }
 
     /// Attempts to read a companion `{stem}.json` or `config.json` configuration,

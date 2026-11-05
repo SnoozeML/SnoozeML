@@ -33,7 +33,7 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: snooze-linux-aarch64
-            features: "streams-all,cuda,tensorrt,ort/lax-feature-matching"
+            features: "streams-all"
 
           # Lightweight CPU-only builds (all backends and all streams, CPU execution only)
           - os: ubuntu-24.04
@@ -104,6 +104,15 @@ jobs:
           tar -C dist -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}
           sha256sum ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
 
+      - name: Verify no hard DT_NEEDED link to libcuda.so.1
+        if: contains(matrix.features, 'cuda')
+        run: |
+          readelf -d ./dist/${{ matrix.artifact_name }}/bin/snooze
+          if readelf -d ./dist/${{ matrix.artifact_name }}/bin/snooze | grep -q "libcuda.so.1"; then
+            echo "::error::Binary has a hard link-time dependency on libcuda.so.1!"
+            exit 1
+          fi
+
       - name: Smoke test packaged binary
         run: |
           ./dist/${{ matrix.artifact_name }}/bin/snooze --version
@@ -124,7 +133,7 @@ jobs:
       matrix:
         include:
           - artifact_name: snooze-macos-aarch64
-            features: "streams-all,coreml"
+            features: "streams-all,coreml,metal"
           - artifact_name: snooze-macos-aarch64-cpu
             features: "streams-all"
     steps:

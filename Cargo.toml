@@ -57,9 +57,10 @@ sha2 = "0.10"
 ort = { version = "2.0.0-rc.4", optional = true }
 
 # Candle & Safetensors Runtime (optional / feature-gated)
-candle-core = { version = "0.11", optional = true }
-candle-nn = { version = "0.11", optional = true }
-candle-transformers = { version = "0.11", optional = true }
+candle-core = { version = "0.11.1", optional = true }
+candle-nn = { version = "0.11.1", optional = true }
+candle-transformers = { version = "0.11.1", optional = true }
+cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "runtime", "nvrtc", "cublas", "cublaslt", "curand", "fallback-dynamic-loading", "cuda-version-from-build-system"], optional = true }
 safetensors = { version = "0.4", optional = true }
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"], optional = true }
 ratatui = "0.30.2"
@@ -81,8 +82,8 @@ ort-backend = ["dep:ort"]
 candle-backend = ["dep:candle-core", "dep:candle-nn", "dep:safetensors", "dep:candle-transformers", "dep:tokenizers"]
 tree-backend = ["dep:hessboost"]
 worker-backend = []
-cuda = ["ort-backend", "ort?/cuda"]
-candle-cuda = ["cuda", "candle-backend", "candle-core?/cuda", "candle-nn?/cuda", "candle-transformers?/cuda"]
+cuda = ["ort-backend", "ort?/cuda", "dep:cudarc"]
+candle-cuda = ["cuda", "candle-backend", "candle-core?/cuda", "candle-nn?/cuda", "candle-transformers?/cuda", "dep:cudarc"]
 tensorrt = ["ort-backend", "ort?/tensorrt"]
 coreml = ["ort-backend", "ort?/coreml"]
 metal = ["candle-backend", "candle-core?/metal", "candle-nn?/metal", "candle-transformers?/metal"]

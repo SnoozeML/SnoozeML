@@ -93,10 +93,13 @@ impl OrtBackend {
                             Some((s, ExecutionProvider::Cuda))
                         }
                         Err(e) => {
+                            let err_str = e.to_string();
+                            let reason = crate::backend::classify_cuda_failure_reason(&err_str);
                             tracing::warn!(
                                 model = %config.model_path,
-                                error = %e,
-                                "Auto device: CUDA GPU unavailable or missing runtime libraries (requires NVIDIA driver + CUDA 13 runtime & cuDNN 9 on host PATH/LD_LIBRARY_PATH, or use ghcr.io/snoozeml/snoozeml:cuda); falling back to CPU"
+                                reason = %reason,
+                                error = %err_str,
+                                "Auto device: {reason} Continuing on the CPU backend"
                             );
                             None
                         }
@@ -156,8 +159,16 @@ impl OrtBackend {
                         ExecutionProvider::Cuda,
                     )
                     .map_err(|e| {
+                        let err_str = e.to_string();
+                        let reason = crate::backend::classify_cuda_failure_reason(&err_str);
+                        tracing::error!(
+                            model = %config.model_path,
+                            reason = %reason,
+                            error = %err_str,
+                            "Strict CUDA execution provider initialization failed: {reason} Remediation: Install a compatible NVIDIA driver, pass --gpus all to Docker, or set device = \"cpu\" / device = \"auto\" in your config"
+                        );
                         InferenceError::Runtime(format!(
-                            "Failed to initialize CUDA execution provider for '{}': {e}. Ensure an NVIDIA GPU driver, CUDA 13 runtime libraries (libcudart/cublas 13), and cuDNN 9 are installed on your host PATH/LD_LIBRARY_PATH (e.g. 'sudo apt-get install cuda-runtime-13-0 libcudnn9-cuda-13' on Ubuntu/Debian), or run the preconfigured 'ghcr.io/snoozeml/snoozeml:cuda' container",
+                            "Failed to initialize CUDA execution provider for '{}': {reason} ({err_str}). Install a compatible NVIDIA driver, CUDA 13 runtime libraries (libcudart/cublas 13), and cuDNN 9 on your host, pass --gpus all to Docker (ghcr.io/snoozeml/snoozeml:cuda), or set device = \"cpu\" / device = \"auto\" in your config",
                             config.model_path
                         ))
                     })?;
@@ -181,8 +192,16 @@ impl OrtBackend {
                         ExecutionProvider::TensorRt,
                     )
                     .map_err(|e| {
+                        let err_str = e.to_string();
+                        let reason = crate::backend::classify_cuda_failure_reason(&err_str);
+                        tracing::error!(
+                            model = %config.model_path,
+                            reason = %reason,
+                            error = %err_str,
+                            "Strict TensorRT execution provider initialization failed: {reason} Remediation: Install NVIDIA TensorRT and a compatible NVIDIA driver, pass --gpus all to Docker, or set device = \"cpu\" / device = \"auto\" in your config"
+                        );
                         InferenceError::Runtime(format!(
-                            "Failed to initialize TensorRT execution provider for '{}': {e}. Ensure NVIDIA TensorRT, CUDA 13 runtime, and cuDNN 9 libraries are installed on your host PATH/LD_LIBRARY_PATH, or run the preconfigured 'ghcr.io/snoozeml/snoozeml:cuda' container",
+                            "Failed to initialize TensorRT execution provider for '{}': {reason} ({err_str}). Ensure NVIDIA TensorRT, CUDA 13 runtime, and cuDNN 9 libraries are installed on your host, pass --gpus all to Docker (ghcr.io/snoozeml/snoozeml:cuda), or set device = \"cpu\" / device = \"auto\" in your config",
                             config.model_path
                         ))
                     })?;
