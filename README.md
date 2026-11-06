@@ -369,7 +369,7 @@ SnoozeML is actively evolving. The following initiatives represent planned archi
 ## Platform Compatibility
 
 > [!NOTE]
-> **RHEL 8 & Legacy `glibc` Notice:** Prebuilt Linux release binaries are linked against `ort-sys` prebuilt archives requiring `glibc >= 2.38` (e.g., Ubuntu 24.04+, Fedora 39+, Debian 13+). **RHEL 8 (`glibc 2.28`) is not supported by prebuilt binaries for the moment**—on RHEL 8 or older distributions, please either deploy via the official container images (`ghcr.io/snoozeml/snoozeml:cpu` or `:cuda`) or build from source without prebuilt ONNX Runtime static binaries (e.g., `cargo build --release --no-default-features --features candle-backend,tree-backend,worker-backend,streams-all` or linking a system `libonnxruntime`).
+> **Linux Compatibility & Legacy `glibc` Notice:** Prebuilt Linux release binaries target `glibc >= 2.35` and statically link C++ runtime dependencies (e.g., Ubuntu 22.04 LTS, Ubuntu 24.04 LTS, Debian 12+, Fedora 36+, WSL2). Legacy enterprise distributions such as **RHEL 8 (`glibc 2.28`) are not supported by prebuilt binaries directly**—on RHEL 8 or older distributions, please either deploy via the official container images (`ghcr.io/snoozeml/snoozeml:cpu` or `:cuda`) or build from source with system toolchains.
 
 ---
 

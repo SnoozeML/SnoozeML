@@ -1,10 +1,11 @@
 # Cargo configuration for SnoozeML.
 #
-# Enforces --as-needed on Linux targets so transitive native build scripts
-# do not bind unused shared libraries into the executable's DT_NEEDED table.
+# Enforces --as-needed and static libstdc++ on Linux targets so transitive native
+# build scripts do not bind unused shared libraries or host libstdc++ GLIBCXX symbol
+# version requirements into the executable's DT_NEEDED table.
 
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-Wl,--as-needed"]
+rustflags = ["-C", "link-arg=-Wl,--as-needed", "-C", "link-arg=-static-libstdc++"]
 
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-Wl,--as-needed"]
+rustflags = ["-C", "link-arg=-Wl,--as-needed", "-C", "link-arg=-static-libstdc++"]

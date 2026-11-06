@@ -4,6 +4,7 @@
 #   $env:SNOOZE_VARIANT="cpu"; irm https://raw.githubusercontent.com/SnoozeML/SnoozeML/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 $Repo = if ($env:SNOOZE_REPO) { $env:SNOOZE_REPO } else { "SnoozeML/SnoozeML" }
 $Version = if ($env:SNOOZE_VERSION) { $env:SNOOZE_VERSION } else { "latest" }
@@ -53,7 +54,18 @@ try {
     New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
     New-Item -ItemType Directory -Force -Path $ModelsDir | Out-Null
 
-    Copy-Item -Path (Join-Path $TmpDir "$ArtifactName\bin\*") -Destination $BinDir -Force
+    # Dynamically locate binaries whether extracted with a top-level artifact folder or flat
+    $SourceBin = if (Test-Path (Join-Path $TmpDir "$ArtifactName\bin")) {
+        Join-Path $TmpDir "$ArtifactName\bin"
+    } elseif (Test-Path (Join-Path $TmpDir "bin")) {
+        Join-Path $TmpDir "bin"
+    } elseif (Test-Path (Join-Path $TmpDir "$ArtifactName")) {
+        Join-Path $TmpDir "$ArtifactName"
+    } else {
+        $TmpDir
+    }
+
+    Copy-Item -Path (Join-Path $SourceBin "*") -Destination $BinDir -Recurse -Force
 
     # Add to User PATH if not already present
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")

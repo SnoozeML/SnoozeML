@@ -342,12 +342,26 @@ info "Installing to $INSTALL_ROOT (no sudo required)..."
 tar -xzf "$TMP_DIR/${ARTIFACT_NAME}.tar.gz" -C "$TMP_DIR"
 
 mkdir -p "$INSTALL_ROOT/bin" "$INSTALL_ROOT/lib" "$BIN_DIR" "$MODELS_DIR"
-cp "$TMP_DIR/$ARTIFACT_NAME/bin/snooze" "$INSTALL_ROOT/bin/snooze"
+
+SOURCE_DIR="$TMP_DIR/$ARTIFACT_NAME"
+if [ ! -d "$SOURCE_DIR" ]; then
+    SOURCE_DIR="$TMP_DIR"
+fi
+
+if [ -f "$SOURCE_DIR/bin/snooze" ]; then
+    cp "$SOURCE_DIR/bin/snooze" "$INSTALL_ROOT/bin/snooze"
+elif [ -f "$SOURCE_DIR/snooze" ]; then
+    cp "$SOURCE_DIR/snooze" "$INSTALL_ROOT/bin/snooze"
+else
+    error "Could not find snooze binary in extracted archive."
+fi
 chmod 755 "$INSTALL_ROOT/bin/snooze"
 
 # Copy bundled shared libraries (e.g. libonnxruntime) if present
-if [ -d "$TMP_DIR/$ARTIFACT_NAME/lib" ]; then
-    cp -P "$TMP_DIR/$ARTIFACT_NAME/lib/"* "$INSTALL_ROOT/lib/" 2>/dev/null || true
+if [ -d "$SOURCE_DIR/lib" ]; then
+    cp -P "$SOURCE_DIR/lib/"* "$INSTALL_ROOT/lib/" 2>/dev/null || true
+elif [ -d "$SOURCE_DIR/bin" ]; then
+    cp -P "$SOURCE_DIR/bin/"*.so* "$INSTALL_ROOT/lib/" 2>/dev/null || true
 fi
 
 ln -sf "$INSTALL_ROOT/bin/snooze" "$BIN_DIR/snooze"
