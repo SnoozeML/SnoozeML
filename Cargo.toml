@@ -54,7 +54,15 @@ subtle = "2.6"
 sha2 = "0.10"
 
 # ONNX Runtime (optional / feature-gated)
-ort = { version = "2.0.0-rc.4", optional = true }
+ort = { version = "=2.0.0-rc.15", default-features = false, optional = true, features = [
+    "std",
+    "ndarray",
+    "load-dynamic",
+    "cuda",
+    "tensorrt",
+    "coreml",
+    "tracing",
+] }
 
 # Candle & Safetensors Runtime (optional / feature-gated)
 candle-core = { version = "0.11.1", optional = true }

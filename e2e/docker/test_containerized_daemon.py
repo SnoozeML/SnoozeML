@@ -462,9 +462,12 @@ def test_container_dynamic_model_upload(
     new_xgb.fit(x_iris, y_iris)
     expected_prob = new_xgb.predict_proba(sample_x).astype(np.float32)
 
-    temp_path = containerized_snooze.models_dir / "dynamic_tree.xgb.json"
-    export_xgboost(new_xgb, output_path=temp_path)
-    file_bytes = temp_path.read_bytes()
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_path = Path(tmpdir) / "dynamic_tree.xgb.json"
+        export_xgboost(new_xgb, output_path=temp_path)
+        file_bytes = temp_path.read_bytes()
 
     # Upload via multipart/form-data to /v1/models/upload
     boundary = "----WebKitFormBoundarySnoozeUploadTest"
@@ -518,9 +521,9 @@ def test_container_dynamic_model_upload(
         actual_out = np.array(res["outputs"][0]["data"], dtype=np.float32).reshape(res["outputs"][0]["shape"])
         np.testing.assert_allclose(actual_out, expected_prob, atol=1e-4)
 
-    # Clean up local file
+    # Clean up uploaded file
     try:
-        temp_path.unlink()
+        (containerized_snooze.models_dir / "dynamic_tree.xgb.json").unlink(missing_ok=True)
     except Exception:
         pass
 

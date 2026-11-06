@@ -1,268 +1,114 @@
-name: Release Binaries
+name: Release
 
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*"
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: "Optional release tag to publish (leave empty for build-only artifact verification)"
-        required: false
-        type: string
-
-permissions:
-  contents: write
 
 env:
+  ORT_VERSION: "1.31.1"
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-linux:
-    name: Build (${{ matrix.artifact_name }})
+  build:
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Standard builds (all backends, all streams, and hardware accelerators)
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            artifact_name: snooze-linux-x86_64
-            features: "streams-all,cuda,tensorrt"
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact_name: snooze-linux-aarch64
-            features: "streams-all"
-
-          # Lightweight CPU-only builds (all backends and all streams, CPU execution only)
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            artifact_name: snooze-linux-x86_64-cpu
-            features: "streams-all"
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact_name: snooze-linux-aarch64-cpu
-            features: "streams-all"
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            ort_archive: onnxruntime-linux-x64-gpu_cuda13-1.31.1.tgz
+            artifact_name: snooze-linux-x86_64.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            ort_archive: onnxruntime-linux-aarch64-1.31.1.tgz
+            artifact_name: snooze-linux-aarch64.tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-15
+            ort_archive: onnxruntime-osx-arm64-1.31.1.tgz
+            artifact_name: snooze-macos-arm64.tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-2025
+            ort_archive: onnxruntime-win-x64-gpu_cuda13-1.31.1.zip
+            artifact_name: snooze-windows-x86_64.zip
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Linux build dependencies
+      - name: Install System Dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libssl-dev \
-            ca-certificates \
-            build-essential \
-            cmake \
-            wget
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev
 
-      - name: Install CUDA 13.0 and cuDNN 9 (for Linux x86_64 builds requiring candle-cuda)
-        if: matrix.target == 'x86_64-unknown-linux-gnu' && contains(matrix.features, 'candle-cuda')
-        run: |
-          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring_1.1-1_all.deb
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cuda-toolkit-13-0 \
-            libcudnn9-cuda-13 \
-            libcudnn9-dev-cuda-13
-          echo "/usr/local/cuda-13.0/bin" >> $GITHUB_PATH
-          echo "CUDA_HOME=/usr/local/cuda-13.0" >> $GITHUB_ENV
-          echo "CUDA_PATH=/usr/local/cuda-13.0" >> $GITHUB_ENV
-          echo "CUDA_COMPUTE_CAP=80" >> $GITHUB_ENV
+      - name: Install System Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
 
-      - name: Install Rust toolchain
+      - name: Install System Dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
+
+      - name: Install Rust Toolchain (1.92+)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Rust Cargo cache
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}-${{ matrix.artifact_name }}
 
-      - name: Build release binary
+      - name: Download ONNX Runtime v${{ env.ORT_VERSION }} Shared Libraries (Unix)
+        if: runner.os != 'Windows'
         run: |
-          cargo build --release --bin snooze --target ${{ matrix.target }} --features "${{ matrix.features }}"
+          mkdir -p ort_dist
+          curl -fSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${{ matrix.ort_archive }}" -o ort.tgz
+          tar -xzf ort.tgz --strip-components=1 -C ort_dist
+          rm ort.tgz
 
-      - name: Package tarball and SHA-256 checksum
+      - name: Download ONNX Runtime v${{ env.ORT_VERSION }} Shared Libraries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          mkdir -p dist/${{ matrix.artifact_name }}/bin dist/${{ matrix.artifact_name }}/lib
-          cp target/${{ matrix.target }}/release/snooze dist/${{ matrix.artifact_name }}/bin/snooze
-          strip dist/${{ matrix.artifact_name }}/bin/snooze || true
+          New-Item -ItemType Directory -Force -Path ort_dist
+          Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v$env:ORT_VERSION/${{ matrix.ort_archive }}" -OutFile ort.zip
+          Expand-Archive -Path ort.zip -DestinationPath ort_tmp
+          Move-Item -Path ort_tmp/*/* -Destination ort_dist/
+          Remove-Item -Recurse -Force ort.zip, ort_tmp
 
-          # Bundle any ONNX Runtime shared libraries downloaded by ort during build (dereference symlinks via -L)
-          find target/${{ matrix.target }}/release -maxdepth 1 \
-            -name "libonnxruntime*.so*" \
-            -exec cp -L {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
+      - name: Build Release Binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
-          cp LICENSE README.md install.sh dist/${{ matrix.artifact_name }}/
-          tar -C dist -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}
-          sha256sum ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
-
-      - name: Verify no hard DT_NEEDED link to CUDA libraries
-        if: contains(matrix.features, 'cuda')
-        run: |
-          readelf -d ./dist/${{ matrix.artifact_name }}/bin/snooze
-          if readelf -d ./dist/${{ matrix.artifact_name }}/bin/snooze | grep -E "libcuda\.so|libcudart\.so|libcurand\.so|libcublas\.so"; then
-            echo "::error::Binary has a hard link-time dependency on CUDA runtime libraries!"
-            exit 1
-          fi
-
-      - name: Smoke test packaged binary
-        run: |
-          ./dist/${{ matrix.artifact_name }}/bin/snooze --version
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: |
-            ${{ matrix.artifact_name }}.tar.gz
-            ${{ matrix.artifact_name }}.tar.gz.sha256
-
-  build-macos:
-    name: Build (${{ matrix.artifact_name }})
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - artifact_name: snooze-macos-aarch64
-            features: "streams-all,coreml,metal"
-          - artifact_name: snooze-macos-aarch64-cpu
-            features: "streams-all"
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-
-      - name: Rust Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: aarch64-apple-darwin-${{ matrix.artifact_name }}
-
-      - name: Build release binary
+      - name: Run Tests with Dynamic ORT
+        shell: bash
         env:
-          RUSTFLAGS: "-C link-arg=-Wl,-rpath,@executable_path/../lib -C link-arg=-Wl,-rpath,@executable_path"
+          ORT_DYLIB_PATH: ${{ runner.os == 'Windows' && format('{0}/ort_dist/lib/onnxruntime.dll', github.workspace) || (runner.os == 'macOS' && format('{0}/ort_dist/lib/libonnxruntime.dylib', github.workspace) || format('{0}/ort_dist/lib/libonnxruntime.so', github.workspace)) }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/ort_dist/lib
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/ort_dist/lib
+        run: cargo test --release --locked --target ${{ matrix.target }}
+
+      - name: Package Archive (Unix)
+        if: runner.os != 'Windows'
         run: |
-          cargo build --release --bin snooze --target aarch64-apple-darwin --features "${{ matrix.features }}"
+          mkdir -p package/lib
+          cp target/${{ matrix.target }}/release/snooze package/
+          cp -P ort_dist/lib/libonnxruntime* package/lib/
+          tar -czf "${{ matrix.artifact_name }}" -C package .
 
-      - name: Package tarball and SHA-256 checksum
+      - name: Package Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          mkdir -p dist/${{ matrix.artifact_name }}/bin dist/${{ matrix.artifact_name }}/lib
-          cp target/aarch64-apple-darwin/release/snooze dist/${{ matrix.artifact_name }}/bin/snooze
-          strip dist/${{ matrix.artifact_name }}/bin/snooze || true
+          New-Item -ItemType Directory -Force -Path package/lib
+          Copy-Item "target/${{ matrix.target }}/release/snooze.exe" -Destination "package/"
+          Copy-Item "ort_dist/lib/onnxruntime*.dll" -Destination "package/"
+          Copy-Item "ort_dist/lib/onnxruntime*.dll" -Destination "package/lib/"
+          Compress-Archive -Path package/* -DestinationPath "${{ matrix.artifact_name }}"
 
-          # Bundle any ONNX Runtime shared libraries downloaded by ort during build (dereference symlinks via -L)
-          find target/aarch64-apple-darwin/release -maxdepth 1 \
-            -name "libonnxruntime*.dylib*" \
-            -exec cp -L {} dist/${{ matrix.artifact_name }}/lib/ \; 2>/dev/null || true
-
-          cp LICENSE README.md install.sh dist/${{ matrix.artifact_name }}/
-          tar -C dist -czf ${{ matrix.artifact_name }}.tar.gz ${{ matrix.artifact_name }}
-          shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
-
-      - name: Smoke test packaged binary
-        run: |
-          ./dist/${{ matrix.artifact_name }}/bin/snooze --version
-
-      - name: Upload workflow artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: |
-            ${{ matrix.artifact_name }}.tar.gz
-            ${{ matrix.artifact_name }}.tar.gz.sha256
-
-  build-windows:
-    name: Build (${{ matrix.artifact_name }})
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - artifact_name: snooze-windows-x86_64
-            features: "streams-all,cuda,tensorrt"
-          - artifact_name: snooze-windows-x86_64-cpu
-            features: "streams-all"
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Rust Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: x86_64-pc-windows-msvc-${{ matrix.artifact_name }}
-
-      - name: Build release binary
-        run: |
-          cargo build --release --bin snooze --target x86_64-pc-windows-msvc --features "${{ matrix.features }}"
-
-      - name: Package zip archive and SHA-256 checksum
-        shell: pwsh
-        run: |
-          $pkgDir = "dist/${{ matrix.artifact_name }}/bin"
-          New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
-          Copy-Item "target/x86_64-pc-windows-msvc/release/snooze.exe" -Destination "$pkgDir/snooze.exe"
-
-          Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release" -Depth 0 -Filter "*.dll" -ErrorAction SilentlyContinue |
-            ForEach-Object { Copy-Item $_.FullName -Destination $pkgDir -Force }
-
-          Copy-Item "LICENSE", "README.md", "install.ps1" -Destination "dist/${{ matrix.artifact_name }}/"
-          Compress-Archive -Path "dist/${{ matrix.artifact_name }}" -DestinationPath "${{ matrix.artifact_name }}.zip" -Force
-
-          $hash = (Get-FileHash -Path "${{ matrix.artifact_name }}.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.artifact_name }}.zip" | Out-File -FilePath "${{ matrix.artifact_name }}.zip.sha256" -Encoding ascii -NoNewline
-
-      - name: Smoke test packaged binary
-        shell: pwsh
-        run: |
-          ./dist/${{ matrix.artifact_name }}/bin/snooze.exe --version
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: |
-            ${{ matrix.artifact_name }}.zip
-            ${{ matrix.artifact_name }}.zip.sha256
-
-  publish-release:
-    name: Publish GitHub Release
-    needs: [build-linux, build-macos, build-windows]
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Copy installer scripts to release assets
-        run: |
-          cp install.sh install.ps1 release-assets/
-
-      - name: Publish to GitHub Releases
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
-          generate_release_notes: true
-          files: release-assets/*
+          path: ${{ matrix.artifact_name }}
