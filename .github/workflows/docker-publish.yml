@@ -20,42 +20,26 @@ env:
 
 jobs:
   # ============================================================================
-  # JOB 1: Build & Smoke-Test Images on Native AMD64 & ARM64 Runners
-  # Uses native x86_64 and ARM64 runners to avoid slow QEMU emulation during
-  # Rust + ONNX Runtime compilation.
+  # JOB 1: Build & Smoke-Test Images (1 Runner per Architecture)
+  # Because slim, cpu, and cuda share the unified 'builder' stage in Dockerfile,
+  # building all targets for an architecture on a single runner compiles the
+  # Rust workspace ONCE and reuses the local BuildKit layer cache across targets.
   # ============================================================================
   build-images:
-    name: Build (${{ matrix.target }} - ${{ matrix.arch }})
+    name: Build Images (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Default Full Image (CUDA + TensorRT + Python Worker + All Streams)
-          - target: cuda
-            os: ubuntu-24.04
+          - os: ubuntu-24.04
             platform: linux/amd64
             arch: amd64
-
-          # Standard CPU Image (All Backends + Python Worker + All Streams)
-          - target: cpu
-            os: ubuntu-24.04
-            platform: linux/amd64
-            arch: amd64
-          - target: cpu
-            os: ubuntu-24.04-arm
+            targets: "slim cpu cuda"
+          - os: ubuntu-24.04-arm
             platform: linux/arm64
             arch: arm64
-
-          # Lite / Slim Image (Pure Rust + ONNX Runtime, Zero Python)
-          - target: slim
-            os: ubuntu-24.04
-            platform: linux/amd64
-            arch: amd64
-          - target: slim
-            os: ubuntu-24.04-arm
-            platform: linux/arm64
-            arch: arm64
+            targets: "slim cpu"
 
     steps:
       - name: Checkout repository
@@ -69,21 +53,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build container image for smoke test
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          platforms: ${{ matrix.platform }}
-          load: true
-          tags: snooze-ci:${{ matrix.target }}-${{ matrix.arch }}
-          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ matrix.arch }}
-
-      - name: Smoke test container image
-        run: |
-          docker run --rm snooze-ci:${{ matrix.target }}-${{ matrix.arch }} --version
-
       - name: Log in to GitHub Container Registry
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
         uses: docker/login-action@v3
@@ -92,30 +61,54 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push image by digest to GHCR
-        id: push_digest
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
-
-      - name: Export image digest for manifest creation
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+      - name: Build, smoke-test, and push targets for ${{ matrix.arch }}
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          SHOULD_PUSH: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '') }}
         run: |
-          mkdir -p /tmp/digests/${{ matrix.target }}
-          digest="${{ steps.push_digest.outputs.digest }}"
-          touch "/tmp/digests/${{ matrix.target }}/${digest#sha256:}"
+          set -euo pipefail
+          first_target=true
+          for target in ${{ matrix.targets }}; do
+            echo "=== Building target: ${target} (${{ matrix.arch }}) ==="
+            cache_args=(--cache-from "type=gha,scope=builder-${{ matrix.arch }}")
+            if [ "$first_target" = "true" ]; then
+              cache_args+=(--cache-to "type=gha,mode=max,scope=builder-${{ matrix.arch }}")
+              first_target=false
+            fi
 
-      - name: Upload digest artifact
+            docker buildx build \
+              --platform "${{ matrix.platform }}" \
+              --target "${target}" \
+              "${cache_args[@]}" \
+              --load \
+              -t "snooze-ci:${target}-${{ matrix.arch }}" \
+              .
+
+            echo "=== Smoke testing snooze-ci:${target}-${{ matrix.arch }} ==="
+            docker run --rm "snooze-ci:${target}-${{ matrix.arch }}" --version
+            docker run --rm "snooze-ci:${target}-${{ matrix.arch }}" --help > /dev/null
+
+            if [ "${SHOULD_PUSH}" = "true" ]; then
+              mkdir -p "/tmp/digests/${target}"
+              metadata_file="/tmp/metadata-${target}-${{ matrix.arch }}.json"
+              docker buildx build \
+                --platform "${{ matrix.platform }}" \
+                --target "${target}" \
+                --cache-from "type=gha,scope=builder-${{ matrix.arch }}" \
+                --output "type=image,name=${IMAGE_NAME},push-by-digest=true,name-canonical=true,push=true" \
+                --metadata-file "${metadata_file}" \
+                .
+              digest=$(python3 -c "import json; d=json.load(open('${metadata_file}'))['containerimage.digest']; print(d.removeprefix('sha256:'))")
+              touch "/tmp/digests/${target}/${digest}"
+            fi
+          done
+
+      - name: Upload digest artifacts
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.target }}-${{ matrix.arch }}
-          path: /tmp/digests/${{ matrix.target }}/*
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*/*
           if-no-files-found: error
           retention-days: 1
 
@@ -148,10 +141,10 @@ jobs:
         run: |
           echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Download digest artifacts for ${{ matrix.target }}
+      - name: Download digest artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: digests-${{ matrix.target }}-*
+          pattern: digests-*
           path: /tmp/digests
           merge-multiple: true
 
@@ -190,7 +183,7 @@ jobs:
             type=semver,pattern={{version}}-lite,value=${{ inputs.tag_name || github.ref_name }},enable=${{ matrix.target == 'slim' }}
 
       - name: Create and push manifest list
-        working-directory: /tmp/digests
+        working-directory: /tmp/digests/${{ matrix.target }}
         env:
           IMAGE_NAME: ${{ steps.image.outputs.name }}
           DOCKER_META_TAGS: ${{ steps.meta.outputs.tags }}

@@ -1,7 +1,8 @@
 //! Build script for SnoozeML.
 //!
 //! Compiles Protocol Buffer schemas using `tonic-build` and `protoc-bin-vendored`,
-//! and configures Linux / macOS RPATH linker flags for dynamic runtime discovery of ONNX Runtime.
+//! and configures Linux / macOS RPATH and `--as-needed` linker flags for dynamic
+//! runtime discovery of ONNX Runtime (`load-dynamic`) and optional CUDA providers.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc_path = protoc_bin_vendored::protoc_bin_path()
@@ -19,9 +20,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &["proto", "proto/third_party"],
         )?;
 
+    println!("cargo:rerun-if-changed=proto/snoozeml/v1/inference.proto");
+    println!("cargo:rerun-if-changed=proto/third_party/grpc_service.proto");
+    println!("cargo:rerun-if-changed=proto/third_party/model_config.proto");
+    println!("cargo:rerun-if-changed=proto/third_party/health.proto");
+
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
         "linux" => {
+            println!("cargo:rustc-link-arg=-Wl,--as-needed");
+            println!("cargo:rustc-link-arg=-static-libstdc++");
             println!(
                 "cargo:rustc-link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN/lib:$ORIGIN/../lib:$ORIGIN/../lib/snooze:$ORIGIN:/usr/local/cuda/lib64:/usr/local/cuda-13.0/lib64:/usr/local/cuda-12.0/lib64"
             );

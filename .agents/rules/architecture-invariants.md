@@ -60,3 +60,17 @@ When modifying core daemon components (`src/batcher.rs`, `src/model.rs`, `src/re
 * **Commit-After-Infer (At-Least-Once Delivery):** Message offsets or broker acknowledgements (`ack`) MUST only be committed after the model's forward pass completes and output payloads have been dispatched to the egress topic/queue. On inference error, reject/nack or route to dead-letter storage.
 * **Queue Backpressure:** Respect `max_queue_size` when feeding incoming messages into `ModelController` / `DynamicBatcher`. When the internal batcher queue is saturated, pause broker polling or apply channel backpressure rather than dropping frames silently.
 
+---
+
+## 7. CUDA, ONNX Runtime & Linux ABI Linking Invariants (PINNED)
+* **Runtime Dynamic Loading Only (`ort/load-dynamic`):**
+  * Never switch `ort` back to `download-binaries` or static linking in `Cargo.toml`. Keep `ort` on `load-dynamic` and bundle Microsoft's official `libonnxruntime` (`1.31.1`) + `libonnxruntime_providers_cuda.so` in `./lib`.
+  * The compiled `snooze` binary on Linux MUST have zero `DT_NEEDED` entries for `libcuda.so*`, `libcudart.so*`, `libcublas.so*`, `libcurand.so*`, `libnvrtc.so*`, `libonnxruntime.so*`, or `libstdc++.so*`.
+  * Do not enable `candle-cuda` in standard release or Docker builds (`Dockerfile`, `.github/workflows/release.yml`), as `candle-core/cuda` forces `cudarc/dynamic-linking` which adds `libcublas.so` and `libcurand.so` to `DT_NEEDED`.
+* **Linux ABI Baseline (`glibc <= 2.35`, `-static-libstdc++`):**
+  * Keep `-Wl,--as-needed` and `-static-libstdc++` in `.cargo/config.toml` and `build.rs`.
+  * Keep Linux `x86_64` release builds on `ubuntu-22.04` so binaries run on Ubuntu 22.04 / WSL2 without `GLIBC_2.38`, `GLIBC_2.39`, or `GLIBCXX_3.4.31` errors.
+* **Mandatory Verification & Docker Availability:**
+  * **Test After Changes, Not Before:** Implement all code/config changes first and run verification/test suites only *after* the changes are complete — never waste time running full test suites before applying changes.
+  * Always run verification checks after making changes. If Docker is needed and the Docker daemon is not running, immediately notify the user instead of wasting time.
+

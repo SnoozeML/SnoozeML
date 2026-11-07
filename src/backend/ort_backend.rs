@@ -1,15 +1,10 @@
-//! ONNX Runtime backend implementation using `ort` 2.0.
+//! ONNX Runtime backend implementation using `ort` 2.0 (`load-dynamic`).
 
 #[cfg(feature = "ort-backend")]
 use {
     crate::backend::ModelBackend,
     crate::types::{InferenceError, TensorPayload},
-    ort::{
-        environment::Environment,
-        ep::{self, ExecutionProvider as OrtExecutionProvider},
-        session::Session,
-        value::Value,
-    },
+    ort::{environment::Environment, session::Session, value::Value},
     std::path::{Path, PathBuf},
     std::sync::Arc,
 };
@@ -70,7 +65,10 @@ impl OrtRuntime {
     /// Returns an error string if loading the dynamic library or building the environment fails.
     pub fn new() -> Result<Self, String> {
         let env = if let Some(dylib_path) = resolve_ort_dylib_path() {
-            tracing::info!("Loading ONNX Runtime dynamically from {:?}", dylib_path);
+            tracing::info!(
+                dylib_path = ?dylib_path,
+                "Loading ONNX Runtime dynamically"
+            );
             ort::init_from(&dylib_path)
                 .map_err(|e| format!("Failed to load ORT dylib at {dylib_path:?}: {e}"))?
                 .with_name("snooze")
@@ -88,66 +86,9 @@ impl OrtRuntime {
 
         Ok(Self { env: Arc::new(env) })
     }
-
-    /// Loads an ONNX model session with automatic CUDA -> CPU fallback.
-    ///
-    /// # Errors
-    /// Returns an error string if session builder configuration or model loading fails.
-    pub fn create_session(
-        &self,
-        model_path: &Path,
-        prefer_cuda: bool,
-        intra_threads: usize,
-    ) -> Result<Session, String> {
-        let mut builder = Session::builder(&self.env)
-            .map_err(|e| format!("Failed to create SessionBuilder: {e}"))?
-            .with_intra_threads(intra_threads)
-            .map_err(|e| format!("Failed to set intra_threads: {e}"))?;
-
-        if prefer_cuda {
-            // Note: Calling `.build()` without `.error_on_failure()` tells ONNX Runtime
-            // to attempt loading `libonnxruntime_providers_cuda.so` and initializing CUDA,
-            // and to gracefully fall back to the next provider (CPU) if drivers/GPUs are missing.
-            match <ep::CUDA as OrtExecutionProvider>::is_available() {
-                Ok(true) => {
-                    tracing::info!(
-                        "CUDA provider library detected; registering CUDA with CPU fallback"
-                    );
-                    builder = builder
-                        .with_execution_providers([
-                            ep::CUDA::default().build(),
-                            ep::CPU::default().build(),
-                        ])
-                        .map_err(|e| {
-                            format!("Failed to register CUDA/CPU execution providers: {e}")
-                        })?;
-                }
-                Ok(false) => {
-                    tracing::warn!("CUDA requested, but CUDA provider is unavailable on this host; falling back to CPU");
-                    builder = builder
-                        .with_execution_providers([ep::CPU::default().build()])
-                        .map_err(|e| format!("Failed to register CPU execution provider: {e}"))?;
-                }
-                Err(e) => {
-                    tracing::warn!("CUDA availability check failed ({e}); falling back to CPU");
-                    builder = builder
-                        .with_execution_providers([ep::CPU::default().build()])
-                        .map_err(|e| format!("Failed to register CPU execution provider: {e}"))?;
-                }
-            }
-        } else {
-            builder = builder
-                .with_execution_providers([ep::CPU::default().build()])
-                .map_err(|e| format!("Failed to register CPU execution provider: {e}"))?;
-        }
-
-        builder
-            .commit_from_file(model_path)
-            .map_err(|e| format!("Failed to load ONNX model {:?}: {e}", model_path))
-    }
 }
 
-/// Resolves the filesystem path to `libonnxruntime` shared library dynamically.
+/// Resolves the filesystem path to the `libonnxruntime` shared library dynamically.
 pub fn resolve_ort_dylib_path() -> Option<PathBuf> {
     if let Some(env_path) = std::env::var_os("ORT_DYLIB_PATH") {
         let path = PathBuf::from(env_path);
@@ -155,8 +96,6 @@ pub fn resolve_ort_dylib_path() -> Option<PathBuf> {
             return Some(path);
         }
     }
-
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
 
     #[cfg(target_os = "linux")]
     let candidates = [
@@ -175,12 +114,19 @@ pub fn resolve_ort_dylib_path() -> Option<PathBuf> {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     let candidates: [&str; 0] = [];
 
-    let search_dirs = [
-        exe_dir.join("lib"),
-        exe_dir.clone(),
-        exe_dir.join("../lib"),
-        exe_dir.join("../lib/snooze"),
-    ];
+    let mut search_dirs = Vec::new();
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            search_dirs.push(exe_dir.join("lib"));
+            search_dirs.push(exe_dir.to_path_buf());
+            search_dirs.push(exe_dir.join("../lib"));
+            search_dirs.push(exe_dir.join("../lib/snooze"));
+            search_dirs.push(exe_dir.join("../../lib"));
+        }
+    }
+    search_dirs.push(PathBuf::from("ort_dist/lib"));
+    search_dirs.push(PathBuf::from("/opt/ort/lib"));
+    search_dirs.push(PathBuf::from("/usr/local/lib"));
 
     for dir in &search_dirs {
         for file in &candidates {
@@ -225,7 +171,7 @@ impl OrtBackend {
     /// Instantiates a new ONNX Runtime session from configuration.
     ///
     /// When configured with [`ExecutionProvider::Auto`], attempts hardware acceleration
-    /// in priority order: GPU (CUDA) -> CPU.
+    /// in priority order: GPU (CUDA) -> MLX / CoreML (on macOS) -> CPU.
     ///
     /// # Errors
     /// Returns [`InferenceError::NotFound`] if the model file is missing, or
@@ -239,6 +185,8 @@ impl OrtBackend {
             )));
         }
 
+        // Check compile-time feature availability before initializing the runtime
+        // when an explicit accelerator is requested.
         match config.provider {
             ExecutionProvider::Cuda => {
                 #[cfg(not(feature = "cuda"))]
@@ -267,39 +215,185 @@ impl OrtBackend {
                     )));
                 }
             }
-            _ => {}
+            ExecutionProvider::Auto | ExecutionProvider::Cpu => {}
         }
 
         let runtime = get_or_init_ort_runtime()?;
-        let prefer_cuda = matches!(
-            config.provider,
-            ExecutionProvider::Cuda | ExecutionProvider::Auto
-        );
 
-        let session = runtime
-            .create_session(path, prefer_cuda, config.intra_threads)
-            .map_err(InferenceError::Runtime)?;
-
-        let active_provider = match config.provider {
-            ExecutionProvider::Cpu => ExecutionProvider::Cpu,
-            ExecutionProvider::Cuda => {
-                let is_cuda = <ep::CUDA as OrtExecutionProvider>::is_available().unwrap_or(false);
-                if is_cuda {
-                    ExecutionProvider::Cuda
-                } else {
-                    ExecutionProvider::Cpu
-                }
-            }
+        let (session, active_provider) = match config.provider {
             ExecutionProvider::Auto => {
-                let is_cuda = <ep::CUDA as OrtExecutionProvider>::is_available().unwrap_or(false);
-                if is_cuda {
-                    ExecutionProvider::Cuda
+                // 1. Try GPU (CUDA)
+                #[cfg(feature = "cuda")]
+                let gpu_res = {
+                    tracing::debug!(model = %config.model_path, "Auto device: attempting CUDA GPU initialization");
+                    match Self::try_commit_session(
+                        &runtime,
+                        path,
+                        config.intra_threads,
+                        config.inter_threads,
+                        ExecutionProvider::Cuda,
+                    ) {
+                        Ok(s) => {
+                            tracing::info!(model = %config.model_path, "Auto device: initialized with CUDA GPU");
+                            Some((s, ExecutionProvider::Cuda))
+                        }
+                        Err(e) => {
+                            let err_str = e.to_string();
+                            let reason = crate::backend::classify_cuda_failure_reason(&err_str);
+                            tracing::warn!(
+                                model = %config.model_path,
+                                reason = %reason,
+                                error = %err_str,
+                                "Auto device: {reason} Continuing on the CPU backend"
+                            );
+                            None
+                        }
+                    }
+                };
+                #[cfg(not(feature = "cuda"))]
+                let gpu_res: Option<(Session, ExecutionProvider)> = None;
+
+                if let Some(res) = gpu_res {
+                    res
                 } else {
-                    ExecutionProvider::Cpu
+                    // 2. Try MLX / CoreML (on macOS)
+                    #[cfg(all(target_os = "macos", feature = "coreml"))]
+                    let mlx_res = {
+                        tracing::debug!(model = %config.model_path, "Auto device: attempting macOS CoreML/MLX initialization");
+                        match Self::try_commit_session(
+                            &runtime,
+                            path,
+                            config.intra_threads,
+                            config.inter_threads,
+                            ExecutionProvider::CoreML,
+                        ) {
+                            Ok(s) => {
+                                tracing::info!(model = %config.model_path, "Auto device: initialized with CoreML/MLX");
+                                Some((s, ExecutionProvider::CoreML))
+                            }
+                            Err(e) => {
+                                tracing::info!(model = %config.model_path, error = %e, "CoreML/MLX unavailable; falling back to CPU");
+                                None
+                            }
+                        }
+                    };
+                    #[cfg(not(all(target_os = "macos", feature = "coreml")))]
+                    let mlx_res: Option<(Session, ExecutionProvider)> = None;
+
+                    if let Some(res) = mlx_res {
+                        res
+                    } else {
+                        // 3. Universal CPU fallback
+                        tracing::info!(model = %config.model_path, "Auto device: defaulting to host CPU");
+                        let s = Self::try_commit_session(
+                            &runtime,
+                            path,
+                            config.intra_threads,
+                            config.inter_threads,
+                            ExecutionProvider::Cpu,
+                        )?;
+                        (s, ExecutionProvider::Cpu)
+                    }
                 }
             }
-            ExecutionProvider::TensorRt => ExecutionProvider::TensorRt,
-            ExecutionProvider::CoreML => ExecutionProvider::CoreML,
+            ExecutionProvider::Cuda => {
+                #[cfg(feature = "cuda")]
+                {
+                    let s = Self::try_commit_session(
+                        &runtime,
+                        path,
+                        config.intra_threads,
+                        config.inter_threads,
+                        ExecutionProvider::Cuda,
+                    )
+                    .map_err(|e| {
+                        let err_str = e.to_string();
+                        let reason = crate::backend::classify_cuda_failure_reason(&err_str);
+                        tracing::error!(
+                            model = %config.model_path,
+                            reason = %reason,
+                            error = %err_str,
+                            "Strict CUDA execution provider initialization failed: {reason} Remediation: Install a compatible NVIDIA driver, pass --gpus all to Docker, or set device = \"cpu\" / device = \"auto\" in your config"
+                        );
+                        InferenceError::Runtime(format!(
+                            "Failed to initialize CUDA execution provider for '{}': {reason} ({err_str}). Install a compatible NVIDIA driver, CUDA 13 runtime libraries (libcudart/cublas 13), and cuDNN 9 on your host, pass --gpus all to Docker (ghcr.io/snoozeml/snoozeml:cuda), or set device = \"cpu\" / device = \"auto\" in your config",
+                            config.model_path
+                        ))
+                    })?;
+                    (s, ExecutionProvider::Cuda)
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    return Err(InferenceError::Runtime(format!(
+                        "CUDA execution provider requested for '{}', but snooze was compiled without the 'cuda' feature",
+                        config.model_path
+                    )));
+                }
+            }
+            ExecutionProvider::TensorRt => {
+                #[cfg(feature = "tensorrt")]
+                {
+                    let s = Self::try_commit_session(
+                        &runtime,
+                        path,
+                        config.intra_threads,
+                        config.inter_threads,
+                        ExecutionProvider::TensorRt,
+                    )
+                    .map_err(|e| {
+                        let err_str = e.to_string();
+                        let reason = crate::backend::classify_cuda_failure_reason(&err_str);
+                        tracing::error!(
+                            model = %config.model_path,
+                            reason = %reason,
+                            error = %err_str,
+                            "Strict TensorRT execution provider initialization failed: {reason} Remediation: Install NVIDIA TensorRT and a compatible NVIDIA driver, pass --gpus all to Docker, or set device = \"cpu\" / device = \"auto\" in your config"
+                        );
+                        InferenceError::Runtime(format!(
+                            "Failed to initialize TensorRT execution provider for '{}': {reason} ({err_str}). Ensure NVIDIA TensorRT, CUDA 13 runtime, and cuDNN 9 libraries are installed on your host, pass --gpus all to Docker (ghcr.io/snoozeml/snoozeml:cuda), or set device = \"cpu\" / device = \"auto\" in your config",
+                            config.model_path
+                        ))
+                    })?;
+                    (s, ExecutionProvider::TensorRt)
+                }
+                #[cfg(not(feature = "tensorrt"))]
+                {
+                    return Err(InferenceError::Runtime(format!(
+                        "TensorRT execution provider requested for '{}', but snooze was compiled without the 'tensorrt' feature",
+                        config.model_path
+                    )));
+                }
+            }
+            ExecutionProvider::CoreML => {
+                #[cfg(all(target_os = "macos", feature = "coreml"))]
+                {
+                    let s = Self::try_commit_session(
+                        &runtime,
+                        path,
+                        config.intra_threads,
+                        config.inter_threads,
+                        ExecutionProvider::CoreML,
+                    )?;
+                    (s, ExecutionProvider::CoreML)
+                }
+                #[cfg(not(all(target_os = "macos", feature = "coreml")))]
+                {
+                    return Err(InferenceError::Runtime(format!(
+                        "CoreML execution provider requested for '{}', but CoreML is not supported or enabled in this build",
+                        config.model_path
+                    )));
+                }
+            }
+            ExecutionProvider::Cpu => {
+                let s = Self::try_commit_session(
+                    &runtime,
+                    path,
+                    config.intra_threads,
+                    config.inter_threads,
+                    ExecutionProvider::Cpu,
+                )?;
+                (s, ExecutionProvider::Cpu)
+            }
         };
 
         Ok(Self {
@@ -307,6 +401,69 @@ impl OrtBackend {
             provider: active_provider,
             _runtime: runtime,
         })
+    }
+
+    /// Internal helper to construct and commit a single ONNX session with the given provider.
+    fn try_commit_session(
+        runtime: &OrtRuntime,
+        path: &Path,
+        intra_threads: usize,
+        inter_threads: usize,
+        provider: ExecutionProvider,
+    ) -> Result<Session, InferenceError> {
+        let mut builder = Session::builder(&runtime.env).map_err(|e| {
+            InferenceError::Runtime(format!("Failed to create SessionBuilder: {e}"))
+        })?;
+
+        builder = builder
+            .with_intra_threads(intra_threads)
+            .map_err(|e| InferenceError::Runtime(format!("Failed to set intra threads: {e}")))?
+            .with_inter_threads(inter_threads)
+            .map_err(|e| InferenceError::Runtime(format!("Failed to set inter threads: {e}")))?;
+
+        match provider {
+            #[cfg(feature = "cuda")]
+            ExecutionProvider::Cuda => {
+                builder = builder
+                    .with_execution_providers([ort::ep::CUDA::default().build().error_on_failure()])
+                    .map_err(|e| {
+                        InferenceError::Runtime(format!("Failed to register CUDA provider: {e}"))
+                    })?;
+            }
+            #[cfg(feature = "tensorrt")]
+            ExecutionProvider::TensorRt => {
+                builder = builder
+                    .with_execution_providers([ort::ep::TensorRT::default()
+                        .build()
+                        .error_on_failure()])
+                    .map_err(|e| {
+                        InferenceError::Runtime(format!(
+                            "Failed to register TensorRT provider: {e}"
+                        ))
+                    })?;
+            }
+            #[cfg(all(target_os = "macos", feature = "coreml"))]
+            ExecutionProvider::CoreML => {
+                builder = builder
+                    .with_execution_providers([ort::ep::CoreML::default()
+                        .build()
+                        .error_on_failure()])
+                    .map_err(|e| {
+                        InferenceError::Runtime(format!("Failed to register CoreML provider: {e}"))
+                    })?;
+            }
+            _ => {
+                builder = builder
+                    .with_execution_providers([ort::ep::CPU::default().build()])
+                    .map_err(|e| {
+                        InferenceError::Runtime(format!("Failed to register CPU provider: {e}"))
+                    })?;
+            }
+        }
+
+        builder
+            .commit_from_file(path)
+            .map_err(|e| InferenceError::Runtime(format!("Failed to load ONNX session: {e}")))
     }
 }
 

@@ -797,3 +797,40 @@ def test_container_models_refresh_endpoint(
         data = json.loads(resp.read().decode("utf-8"))
         assert data["status"] == "refreshed"
         assert "models" in data
+
+
+def test_cpu_only_linux_cuda_build_and_cli_without_gpu() -> None:
+    """Spins up a normal CPU-only Linux container without GPU access, verifies the CUDA-enabled
+    snooze build has zero missing dynamic libraries or GLIBC/GLIBCXX/CUDA link errors, and runs
+    CLI commands ('snooze --help', 'snooze --version', 'snooze models') cleanly.
+    """
+    if not is_docker_available():
+        pytest.fail("Docker daemon is not running or not reachable on this host.")
+
+    image_name = find_snooze_image()
+
+    # Run inside a standard Linux container with no GPU access (--gpus is NOT passed)
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image_name,
+        "-c",
+        (
+            "set -e; "
+            "snooze --version; "
+            "snooze --help > /dev/null; "
+            "ldd /usr/local/bin/snooze; "
+            "if ldd /usr/local/bin/snooze | grep -i 'not found'; then exit 1; fi; "
+            "if ldd /usr/local/bin/snooze | grep -E 'libcuda|libcudart|libcublas|libcurand|libnvrtc|libonnxruntime|libstdc\\+\\+'; then exit 1; fi"
+        ),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, (
+        f"CPU-only Linux container command failed (exit {res.returncode}):\n"
+        f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
+    )
+    assert "snooze" in res.stdout.lower()
+

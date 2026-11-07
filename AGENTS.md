@@ -121,11 +121,25 @@ All code in `src/` is compiled under `#![deny(clippy::unwrap_used, clippy::expec
 - **Decoupled Tokio Tasks**: Run each consumer in an isolated actor task. Network disconnects must never crash or block the server.
 - **Commit-After-Infer**: Only acknowledge messages or commit partition offsets after model inference and egress dispatch succeed.
 
+### 3.7 CUDA, ONNX Runtime & Linux ABI Linking Rules (PINNED — DO NOT REVERT)
+- **Zero Hard Link-Time Dependencies (`DT_NEEDED`) on CUDA or ONNX Runtime**:
+  - The `snooze` binary MUST start and run on CPU-only Linux hosts where no NVIDIA GPU, no `libcuda.so.1`, and no CUDA runtime toolkit libraries are installed.
+  - Never declare CUDA (`libcuda.so*`, `libcudart.so*`, `libcublas.so*`, `libcurand.so*`, `libnvrtc.so*`) or `libonnxruntime.so*` as hard link-time dependencies (`DT_NEEDED`) of the `snooze` binary. If they are in `DT_NEEDED`, the OS dynamic linker (`ld.so`) aborts the process before `main()` even runs, preventing `snooze --help` or `device = "auto"` CPU fallback from ever executing.
+  - Keep `ort` configured with `load-dynamic` in `Cargo.toml` (`default-features = false, features = ["std", "ndarray", "load-dynamic"]`) and bundle Microsoft's official prebuilt `libonnxruntime` (`1.31.1`) + `libonnxruntime_providers_cuda.so` in the `lib/` directory alongside `snooze`.
+  - Do NOT enable `candle-cuda` in standard portable release or Docker builds (`Dockerfile`, `.github/workflows/release.yml`), because `candle-core/cuda` forces `cudarc/dynamic-linking`, which embeds `libcublas.so` and `libcurand.so` into `DT_NEEDED`.
+- **Linux `glibc` & `libstdc++` Portability**:
+  - Always pass `-Wl,--as-needed` and `-static-libstdc++` on Linux targets (in `.cargo/config.toml` and `build.rs`) so `libstdc++.so.6` (`GLIBCXX_3.4.31`) is never required at runtime.
+  - Build Linux `x86_64` release artifacts on `ubuntu-22.04` (`glibc 2.35`) in `.github/workflows/release.yml` so binaries never bind to `GLIBC_2.38` or `GLIBC_2.39` symbols and run cleanly on Ubuntu 22.04 / WSL2 / Debian Bookworm+.
+
 ---
 
-## 4. Build, Test & Lint Commands
+## 4. Mandatory Verification, Docker & Lint Rules
 
-Always run both the Rust quality gates and the Python SDK test suite before completing a task:
+- **Test After Changes, Not Before**: Implement all planned code, configuration, and workflow changes **first**, and run the test suites and verification builds **only after** the changes are in place. Do not waste time running full test suites or container builds before making changes.
+- **Mandatory Post-Change Verification**: You MUST execute local verification checks after making changes before committing or finishing a session. Never push or conclude changes to `Dockerfile`, `.github/workflows/`, `build.rs`, or `Cargo.toml` without verifying them locally first.
+- **Docker Availability Rule**: Whenever a task requires Docker (e.g. building or testing container images, or running the CPU-only Linux container verification), check if the Docker daemon is running first (`docker info` / `docker version`). **If Docker is missing or not running, immediately stop and tell the user** so they can start it — do not waste time retrying, guessing, or skipping the test.
+
+Always run the Rust quality gates, Python SDK test suite, and (when touching build/runtime/Docker files) the CPU-only Linux Docker test before completing a task:
 
 ```bash
 # 1. Run all unit and integration tests across all targets
@@ -139,6 +153,9 @@ cargo fmt --check
 
 # 4. Run Python SDK and worker pytest suite
 pytest python/tests -v
+
+# 5. Run containerized daemon & CPU-only Linux verification tests
+pytest e2e/docker/test_containerized_daemon.py -v
 ```
 
 ---
