@@ -1,6 +1,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
+import { unified } from '@astrojs/markdown-remark';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 
@@ -8,17 +9,19 @@ export default defineConfig({
   site: 'https://snoozeml.github.io',
   base: '/SnoozeML',
   markdown: {
-    remarkPlugins: [remarkMath],
-    rehypePlugins: [rehypeKatex],
+    processor: unified({
+      remarkPlugins: [remarkMath],
+      rehypePlugins: [rehypeKatex],
+    }),
   },
   integrations: [
     mermaid(),
     starlight({
       title: 'SnoozeML',
       description: 'Single-binary, scale-to-zero ML inference daemon in Rust',
-      social: {
-        github: 'https://github.com/SnoozeML/SnoozeML',
-      },
+      social: [
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/SnoozeML/SnoozeML' },
+      ],
       customCss: [
         'katex/dist/katex.min.css',
       ],
