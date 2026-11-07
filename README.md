@@ -19,7 +19,7 @@
 
 ---
 
-**SnoozeML** (`snooze`) is a bare-metal inference server engineered for high hardware utilization and zero idle memory waste. It combines **adaptive dynamic micro-batching** with **in-process scale-to-zero memory reclamation**, lazily loading model weights on demand and automatically evicting inactive models from GPU VRAM and host RAM.
+**SnoozeML** (`snooze`) is a bare-metal inference server engineered for high hardware utilization and zero idle memory waste. It combines **adaptive dynamic micro-batching** with **in-process scale-to-zero memory reclamation**, lazily loading model weights on demand and automatically evicting inactive models from GPU VRAM and host RAM. Thanks to it's fully compliance with Triton and OIP v2, you can use it to build and test locally without dealing with the overhead of a full Triton setup until you're ready for production.
 
 > [!NOTE]
 > SnoozeML is purpose-built for predictive machine learning, deep learning encoders, computer vision, audio, and tabular models. Generative Large Language Models (LLMs) requiring autoregressive token decoding and KV-cache management are explicitly **out of scope**.
